@@ -36,12 +36,15 @@ docker compose ps
 # Generate 1000 profiles with 5% fraud rate (default)
 uv run python src/main.py seed
 
-# Custom generation
-uv run python src/main.py seed --count 5000 --fraud-rate 0.10
+# Custom generation with user sequences
+uv run python src/main.py seed --users 500 --fraud-rate 0.10
+
+# Legacy mode (single transaction per user)
+uv run python src/main.py seed --users 1000 --legacy
 
 # With all options
 uv run python src/main.py seed \
-  --count 10000 \
+  --users 1000 \
   --fraud-rate 0.05 \
   --seed 42 \
   --batch-size 500 \
@@ -61,14 +64,15 @@ uv run python src/main.py seed \
 
 | Option | Short | Default | Description |
 |--------|-------|---------|-------------|
-| `--count` | `-c` | 1000 | Total number of profiles to generate |
-| `--fraud-rate` | `-f` | 0.05 | Fraction of fraudulent profiles (0.0-1.0) |
+| `--users` | `-u` | 100 | Number of unique users to generate |
+| `--fraud-rate` | `-f` | 0.05 | Fraction of users with fraud events (0.0-1.0) |
 | `--seed` | `-s` | None | Random seed for reproducibility |
 | `--batch-size` | `-b` | 500 | Batch size for database inserts |
 | `--database-url` | | env | Database URL (or set `DATABASE_URL`) |
 | `--drop-tables` | | False | Drop existing tables before seeding |
 | `--json-logs` | | False | Output logs in JSON format |
 | `--verbose` | `-v` | False | Enable verbose logging |
+| `--legacy` | | False | Use legacy mode (single transaction per user) |
 
 ### Development
 
@@ -90,12 +94,13 @@ make clean
 
 ### Generated Records Table (`generated_records`)
 
-Main denormalized table containing all profile data.
+Main denormalized table containing all transaction data.
 
 | Column | Type | Description |
 |--------|------|-------------|
 | `id` | INTEGER | Primary key (auto-increment) |
 | `record_id` | VARCHAR(50) | Unique record identifier |
+| `user_id` | VARCHAR(50) | User identifier (indexed) |
 | `full_name` | VARCHAR(255) | Account holder name |
 | `email` | VARCHAR(255) | Email address |
 | `phone` | VARCHAR(50) | Phone number |
@@ -115,8 +120,28 @@ Main denormalized table containing all profile data.
 | `email_changed_at` | DATETIME | Last email change time |
 | `phone_changed_at` | DATETIME | Last phone change time |
 | `is_fraudulent` | BOOLEAN | Fraud label (target) |
-| `fraud_type` | VARCHAR(50) | Type: liquidity_crunch, link_burst, ato |
+| `fraud_type` | VARCHAR(50) | Type: liquidity_crunch, link_burst, ato, bust_out, sleeper_ato |
 | `created_at` | DATETIME | Record creation time |
+
+### Evaluation Metadata Table (`evaluation_metadata`)
+
+Tracks temporal relationships between transactions and fraud events for proper train/test splitting. **This table is for evaluation only - should NOT be used as training features.**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | INTEGER | Primary key (auto-increment) |
+| `user_id` | VARCHAR(50) | User identifier (indexed) |
+| `record_id` | VARCHAR(50) | Links to generated_records (indexed) |
+| `sequence_number` | INTEGER | Transaction order for user (1-indexed) |
+| `fraud_confirmed_at` | DATETIME | When fraud was confirmed (nullable) |
+| `is_pre_fraud` | BOOLEAN | Transaction occurred before fraud detection |
+| `days_to_fraud` | FLOAT | Days until fraud event (negative if after) |
+| `is_train_eligible` | BOOLEAN | Can be used for training (indexed) |
+| `created_at` | DATETIME | Record creation time |
+
+**Indexes:**
+- `ix_eval_user_sequence` on `(user_id, sequence_number)`
+- `ix_eval_train_eligible` on `(is_train_eligible, is_pre_fraud)`
 
 ### Pydantic Models
 
@@ -158,6 +183,7 @@ Composite model combining all above with PII and labels.
 | Field | Type | Description |
 |-------|------|-------------|
 | `record_id` | String | Unique identifier |
+| `user_id` | String | User identifier |
 | `full_name` | String | Account holder name |
 | `email` | String | Email address |
 | `phone` | String | Phone number |
@@ -170,6 +196,20 @@ Composite model combining all above with PII and labels.
 | `identity_changes` | IdentityChangeInfo | Identity change tracking |
 | `is_fraudulent` | Boolean | Fraud label |
 | `fraud_type` | String | Fraud scenario type |
+
+#### EvaluationMetadata
+
+Metadata for model evaluation (not used in training).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `user_id` | String | User identifier |
+| `record_id` | String | Links to GeneratedRecord |
+| `sequence_number` | Integer | Transaction order (1-indexed) |
+| `fraud_confirmed_at` | DateTime | When fraud was confirmed |
+| `is_pre_fraud` | Boolean | Before fraud detection |
+| `days_to_fraud` | Float | Days until fraud event |
+| `is_train_eligible` | Boolean | Can be used for training |
 
 ### Graph Models
 
@@ -193,11 +233,27 @@ Composite model combining all above with PII and labels.
 
 ### Fraud Patterns
 
+#### Transaction-Based Patterns
+
 | Pattern | Key Indicators |
 |---------|----------------|
 | **Liquidity Crunch** | Low balance, z-score < -2.5, is_returned=True |
 | **Link Burst** | bank_connections_count_24h between 5-15 |
 | **Account Takeover (ATO)** | amount_to_avg_ratio > 5.0, off-hours, identity change < 72h |
+
+#### Stateful Fraud Profiles (src/generator/core.py)
+
+| Profile | Behavior | Metadata |
+|---------|----------|----------|
+| **Bust-Out** | 20-50 small legitimate transactions, then sudden spike (>500% of avg) | Fraud event has `is_train_eligible=True` |
+| **Sleeper (ATO)** | Dormant 30+ days, then Link Burst (3+ connections in 1 hour), then high-value debit | Burst events marked `is_pre_fraud=True` |
+
+**Label Delay Simulation**: `fraud_confirmed_at` uses Log-Normal distribution (mean=5 days). If `fraud_confirmed_at > simulation_date`, record appears "clean" (undetected fraud).
+
+#### Graph-Based Patterns
+
+| Pattern | Key Indicators |
+|---------|----------------|
 | **Device Sharing** | >5 users per device in 7 days |
 | **IP Recycling** | Multiple users sharing same IP/VPN |
 | **Kiting Cycle** | Circular fund transfers (A->B->C->A) |
@@ -208,6 +264,9 @@ Composite model combining all above with PII and labels.
 synthetic-data-gen/
 ├── src/
 │   ├── main.py                          # CLI entry point
+│   ├── generator/
+│   │   ├── __init__.py                  # Stateful generator exports
+│   │   └── core.py                      # UserSimulator, fraud profiles
 │   └── synthetic_pipeline/
 │       ├── __init__.py                  # Package init
 │       ├── generator.py                 # DataGenerator class
@@ -226,6 +285,7 @@ synthetic-data-gen/
 │           └── transaction.py           # TransactionEvaluation model
 ├── tests/
 │   ├── __init__.py
+│   ├── test_core_generator.py           # Stateful generator tests
 │   ├── test_generator.py                # DataGenerator tests
 │   ├── test_graph.py                    # GraphNetworkGenerator tests
 │   └── test_pipeline.py                 # Basic tests
@@ -251,9 +311,10 @@ synthetic-data-gen/
 | File | Purpose |
 |------|---------|
 | `src/main.py` | CLI with `seed`, `init-db`, `stats` commands |
+| `src/generator/core.py` | Stateful UserSimulator, BustOutProfile, SleeperProfile |
 | `src/synthetic_pipeline/generator.py` | Transaction data generation with fraud patterns |
 | `src/synthetic_pipeline/graph.py` | Graph relationship generation |
-| `src/synthetic_pipeline/db/models.py` | SQLAlchemy ORM models |
+| `src/synthetic_pipeline/db/models.py` | SQLAlchemy ORM models (GeneratedRecordDB, EvaluationMetadataDB) |
 | `src/synthetic_pipeline/db/session.py` | Database connection pooling and batch inserts |
 | `src/synthetic_pipeline/models/*.py` | Pydantic validation models |
 | `docker-compose.yml` | PostgreSQL and generator services |
