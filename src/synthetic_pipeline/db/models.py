@@ -7,11 +7,13 @@ from sqlalchemy import (
     Boolean,
     DateTime,
     Float,
+    ForeignKey,
     Index,
     Integer,
     Numeric,
     String,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -221,4 +223,70 @@ class EvaluationMetadataDB(Base):
     __table_args__ = (
         Index("ix_eval_user_sequence", "user_id", "sequence_number"),
         Index("ix_eval_train_eligible", "is_train_eligible", "is_pre_fraud"),
+    )
+
+
+class FeatureSnapshotDB(Base):
+    """Feature store snapshot for ML training.
+
+    Contains point-in-time correct features computed from generated_records
+    using window functions. No future data leakage.
+    """
+
+    __tablename__ = "feature_snapshots"
+
+    # Primary key
+    snapshot_id: Mapped[int] = mapped_column(
+        Integer, primary_key=True, autoincrement=True
+    )
+
+    # Foreign key to generated_records
+    record_id: Mapped[str] = mapped_column(
+        String(50),
+        ForeignKey("generated_records.record_id"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
+    # User identifier for partitioning
+    user_id: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+
+    # Velocity feature: transaction count in 24h window
+    velocity_24h: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        comment="COUNT(*) of transactions in 24h window for user",
+    )
+
+    # Amount ratio feature: current amount / 30-day rolling average
+    amount_to_avg_ratio_30d: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        comment="Current amount / AVG(amount) over 30d window",
+    )
+
+    # Balance volatility z-score: (balance - avg) / stddev over 30d
+    balance_volatility_z_score: Mapped[float] = mapped_column(
+        Float,
+        nullable=False,
+        comment="(balance - AVG(balance)) / STDDEV(balance) over 30d",
+    )
+
+    # Flexible JSONB column for experimental signals
+    experimental_signals: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+        default=None,
+        comment="Flexible JSON for experimental features (device_trust_score, etc.)",
+    )
+
+    # Metadata
+    computed_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_feature_user_id", "user_id"),
+        Index("ix_feature_computed_at", "computed_at"),
     )

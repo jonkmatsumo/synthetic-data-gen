@@ -143,6 +143,42 @@ Tracks temporal relationships between transactions and fraud events for proper t
 - `ix_eval_user_sequence` on `(user_id, sequence_number)`
 - `ix_eval_train_eligible` on `(is_train_eligible, is_pre_fraud)`
 
+### Feature Snapshots Table (`feature_snapshots`)
+
+Feature store for ML training with point-in-time correct features computed using SQL window functions. **No future data leakage.**
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `snapshot_id` | INTEGER | Primary key (auto-increment) |
+| `record_id` | VARCHAR(50) | FK to generated_records (unique, indexed) |
+| `user_id` | VARCHAR(50) | User identifier (indexed) |
+| `velocity_24h` | INTEGER | Transaction count in 24h window |
+| `amount_to_avg_ratio_30d` | FLOAT | Current amount / 30-day rolling average |
+| `balance_volatility_z_score` | FLOAT | (balance - avg) / stddev over 30 days |
+| `experimental_signals` | JSONB | Flexible JSON for experimental features |
+| `computed_at` | DATETIME | When features were computed |
+
+**Window Function Logic (Point-in-Time Correct):**
+```sql
+-- velocity_24h
+COUNT(*) OVER (
+    PARTITION BY user_id
+    ORDER BY transaction_timestamp
+    RANGE BETWEEN INTERVAL '24 hours' PRECEDING AND CURRENT ROW
+)
+
+-- balance_volatility_z_score
+(balance - AVG(balance) OVER window) / STDDEV(balance) OVER window
+-- where window = RANGE BETWEEN INTERVAL '30 days' PRECEDING AND CURRENT ROW
+```
+
+**Experimental Signals (JSONB):**
+- `velocity_7d`: Transaction count in 7-day window
+- `max_amount_30d`: Maximum amount in 30-day window
+- `off_hours_count_7d`: Off-hours transactions in 7 days
+- `bank_connections_24h`: Bank connection count
+- `merchant_risk_score`: Merchant risk score
+
 ### Pydantic Models
 
 #### AccountSnapshot
@@ -267,6 +303,9 @@ synthetic-data-gen/
 │   ├── generator/
 │   │   ├── __init__.py                  # Stateful generator exports
 │   │   └── core.py                      # UserSimulator, fraud profiles
+│   ├── pipeline/
+│   │   ├── __init__.py                  # Pipeline exports
+│   │   └── materialize_features.py      # Feature materialization script
 │   └── synthetic_pipeline/
 │       ├── __init__.py                  # Package init
 │       ├── generator.py                 # DataGenerator class
@@ -275,7 +314,9 @@ synthetic-data-gen/
 │       ├── db/
 │       │   ├── __init__.py              # DB module exports
 │       │   ├── models.py                # SQLAlchemy models
-│       │   └── session.py               # Database session management
+│       │   ├── session.py               # Database session management
+│       │   └── migrations/
+│       │       └── 001_create_feature_snapshots.sql
 │       └── models/
 │           ├── __init__.py              # Model exports
 │           ├── account.py               # AccountSnapshot model
@@ -286,6 +327,7 @@ synthetic-data-gen/
 ├── tests/
 │   ├── __init__.py
 │   ├── test_core_generator.py           # Stateful generator tests
+│   ├── test_feature_store.py            # Feature store tests
 │   ├── test_generator.py                # DataGenerator tests
 │   ├── test_graph.py                    # GraphNetworkGenerator tests
 │   └── test_pipeline.py                 # Basic tests
@@ -312,10 +354,12 @@ synthetic-data-gen/
 |------|---------|
 | `src/main.py` | CLI with `seed`, `init-db`, `stats` commands |
 | `src/generator/core.py` | Stateful UserSimulator, BustOutProfile, SleeperProfile |
+| `src/pipeline/materialize_features.py` | Feature materialization with SQL window functions |
 | `src/synthetic_pipeline/generator.py` | Transaction data generation with fraud patterns |
 | `src/synthetic_pipeline/graph.py` | Graph relationship generation |
-| `src/synthetic_pipeline/db/models.py` | SQLAlchemy ORM models (GeneratedRecordDB, EvaluationMetadataDB) |
+| `src/synthetic_pipeline/db/models.py` | SQLAlchemy ORM models (GeneratedRecordDB, FeatureSnapshotDB) |
 | `src/synthetic_pipeline/db/session.py` | Database connection pooling and batch inserts |
+| `src/synthetic_pipeline/db/migrations/*.sql` | SQL migration scripts |
 | `src/synthetic_pipeline/models/*.py` | Pydantic validation models |
 | `docker-compose.yml` | PostgreSQL and generator services |
 | `pyproject.toml` | Dependencies and project metadata |
