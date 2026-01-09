@@ -51,3 +51,7 @@ Thumbs.db
 # Project specific
 config/*.yaml
 !config/.gitkeep
+
+# Environment files
+.env
+!.env.example
