@@ -392,7 +392,8 @@ synthetic-data-gen/
 │   │   └── evaluate.py                  # Score calibration and evaluation
 │   ├── ui/                              # Streamlit dashboard
 │   │   ├── Dockerfile                   # Dashboard container
-│   │   └── app.py                       # Dashboard application
+│   │   ├── app.py                       # Dashboard application
+│   │   └── data_service.py              # Database and API client layer
 │   ├── generator/
 │   │   ├── __init__.py                  # Stateful generator exports
 │   │   └── core.py                      # UserSimulator, fraud profiles
@@ -422,6 +423,7 @@ synthetic-data-gen/
 │   ├── test_api.py                      # API endpoint tests
 │   ├── test_evaluate.py                 # Model evaluation tests
 │   ├── test_loader.py                   # DataLoader tests
+│   ├── test_ui_data_service.py          # Dashboard data service tests
 │   ├── test_core_generator.py           # Stateful generator tests
 │   ├── test_feature_store.py            # Feature store tests
 │   ├── test_generator.py                # DataGenerator tests
@@ -454,6 +456,7 @@ synthetic-data-gen/
 | `src/model/loader.py` | DataLoader with temporal splitting and label maturity |
 | `src/model/evaluate.py` | Score calibration and impact analysis |
 | `src/ui/app.py` | Streamlit dashboard for risk inspection |
+| `src/ui/data_service.py` | Database queries and API client for dashboard |
 | `src/generator/core.py` | Stateful UserSimulator, BustOutProfile, SleeperProfile |
 | `src/pipeline/materialize_features.py` | Feature materialization with SQL window functions |
 | `src/synthetic_pipeline/generator.py` | Transaction data generation with fraud patterns |
