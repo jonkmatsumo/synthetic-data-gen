@@ -4,10 +4,14 @@ from typing import Annotated
 
 import typer
 
-from synthetic_pipeline.db import DatabaseSession, GeneratedRecordDB
+from synthetic_pipeline.db import (
+    DatabaseSession,
+    EvaluationMetadataDB,
+    GeneratedRecordDB,
+)
 from synthetic_pipeline.generator import DataGenerator, FraudType
 from synthetic_pipeline.logging import configure_logging, get_logger
-from synthetic_pipeline.models import GeneratedRecord
+from synthetic_pipeline.models import EvaluationMetadata, GeneratedRecord
 
 app = typer.Typer(
     name="synthetic-data-gen",
@@ -20,6 +24,7 @@ def pydantic_to_db(record: GeneratedRecord) -> GeneratedRecordDB:
     """Convert a Pydantic GeneratedRecord to SQLAlchemy model."""
     return GeneratedRecordDB(
         record_id=record.record_id,
+        user_id=record.user_id,
         full_name=record.full_name,
         email=record.email,
         phone=record.phone,
@@ -43,18 +48,31 @@ def pydantic_to_db(record: GeneratedRecord) -> GeneratedRecordDB:
     )
 
 
+def metadata_to_db(meta: EvaluationMetadata) -> EvaluationMetadataDB:
+    """Convert a Pydantic EvaluationMetadata to SQLAlchemy model."""
+    return EvaluationMetadataDB(
+        user_id=meta.user_id,
+        record_id=meta.record_id,
+        sequence_number=meta.sequence_number,
+        fraud_confirmed_at=meta.fraud_confirmed_at,
+        is_pre_fraud=meta.is_pre_fraud,
+        days_to_fraud=meta.days_to_fraud,
+        is_train_eligible=meta.is_train_eligible,
+    )
+
+
 @app.command()
 def seed(
-    count: Annotated[
+    num_users: Annotated[
         int,
-        typer.Option("--count", "-c", help="Total number of profiles to generate"),
-    ] = 1000,
+        typer.Option("--users", "-u", help="Number of unique users to generate"),
+    ] = 100,
     fraud_rate: Annotated[
         float,
         typer.Option(
             "--fraud-rate",
             "-f",
-            help="Fraction of profiles that should be fraudulent (0.0-1.0)",
+            help="Fraction of users that should have fraud events (0.0-1.0)",
         ),
     ] = 0.05,
     seed_value: Annotated[
@@ -81,14 +99,21 @@ def seed(
         bool,
         typer.Option("--verbose", "-v", help="Enable verbose logging"),
     ] = False,
+    legacy_mode: Annotated[
+        bool,
+        typer.Option(
+            "--legacy",
+            help="Use legacy generation (single transaction per user, no sequences)",
+        ),
+    ] = False,
 ) -> None:
     """Generate synthetic transaction profiles and seed the database.
 
-    Generates a mix of legitimate and fraudulent profiles based on the
-    specified fraud rate, then inserts them into PostgreSQL.
+    Generates user transaction sequences with both legitimate and fraudulent
+    patterns, including evaluation metadata for proper train/test splitting.
 
     Example:
-        synthetic-data-gen seed --count 1000 --fraud-rate 0.05
+        synthetic-data-gen seed --users 100 --fraud-rate 0.05
     """
     # Configure logging
     log_level = "DEBUG" if verbose else "INFO"
@@ -100,67 +125,87 @@ def seed(
         log.error("Invalid fraud rate", fraud_rate=fraud_rate)
         raise typer.BadParameter("Fraud rate must be between 0.0 and 1.0")
 
-    if count < 1:
-        log.error("Invalid count", count=count)
-        raise typer.BadParameter("Count must be at least 1")
+    if num_users < 1:
+        log.error("Invalid user count", num_users=num_users)
+        raise typer.BadParameter("User count must be at least 1")
 
     # Calculate counts
-    fraud_count = int(count * fraud_rate)
-    legitimate_count = count - fraud_count
+    num_fraud_users = int(num_users * fraud_rate)
+    num_legitimate_users = num_users - num_fraud_users
 
     log.info(
         "Starting data generation",
-        total_count=count,
+        num_users=num_users,
         fraud_rate=fraud_rate,
-        fraud_count=fraud_count,
-        legitimate_count=legitimate_count,
+        fraud_users=num_fraud_users,
+        legitimate_users=num_legitimate_users,
         seed=seed_value,
+        mode="legacy" if legacy_mode else "sequences",
     )
 
     # Initialize generator
     generator = DataGenerator(seed=seed_value)
 
-    # Generate legitimate records
-    log.info("Generating legitimate profiles", count=legitimate_count)
-    legitimate_records = generator.generate_legitimate(count=legitimate_count)
-    log.debug("Legitimate profiles generated", count=len(legitimate_records))
+    if legacy_mode:
+        # Legacy mode: single transaction per user (backward compatible)
+        log.info("Using legacy generation mode")
 
-    # Generate fraudulent records with mixed fraud types
-    log.info("Generating fraudulent profiles", count=fraud_count)
-    fraudulent_records: list[GeneratedRecord] = []
+        legitimate_records = generator.generate_legitimate(count=num_legitimate_users)
+        fraudulent_records: list[GeneratedRecord] = []
 
-    if fraud_count > 0:
-        # Distribute fraud types roughly evenly
-        fraud_types = list(FraudType)
-        per_type = fraud_count // len(fraud_types)
-        remainder = fraud_count % len(fraud_types)
+        if num_fraud_users > 0:
+            fraud_types = list(FraudType)
+            per_type = num_fraud_users // len(fraud_types)
+            remainder = num_fraud_users % len(fraud_types)
 
-        for i, fraud_type in enumerate(fraud_types):
-            type_count = per_type + (1 if i < remainder else 0)
-            if type_count > 0:
-                records = generator.generate_fraudulent(fraud_type, count=type_count)
-                fraudulent_records.extend(records)
-                log.debug(
-                    "Generated fraud type",
-                    fraud_type=fraud_type.value,
-                    count=type_count,
-                )
+            for i, fraud_type in enumerate(fraud_types):
+                type_count = per_type + (1 if i < remainder else 0)
+                if type_count > 0:
+                    records = generator.generate_fraudulent(
+                        fraud_type, count=type_count
+                    )
+                    fraudulent_records.extend(records)
 
-    # Combine all records
-    all_records = legitimate_records + fraudulent_records
+        all_records = legitimate_records + fraudulent_records
+        all_metadata: list[EvaluationMetadata] = []
 
-    log.info(
-        "Generation complete",
-        total_generated=len(all_records),
-        legitimate=len(legitimate_records),
-        fraudulent=len(fraudulent_records),
-    )
+        log.info(
+            "Legacy generation complete",
+            total_records=len(all_records),
+            legitimate=len(legitimate_records),
+            fraudulent=len(fraudulent_records),
+        )
+    else:
+        # Sequence mode: multiple transactions per user with temporal tracking
+        log.info("Generating user sequences with evaluation metadata")
+
+        result = generator.generate_dataset_with_sequences(
+            num_users=num_users,
+            fraud_rate=fraud_rate,
+        )
+        all_records = result.records
+        all_metadata = result.metadata
+
+        # Count statistics
+        fraud_records = [r for r in all_records if r.is_fraudulent]
+        train_eligible = [m for m in all_metadata if m.is_train_eligible]
+        unique_users = len(set(r.user_id for r in all_records))
+
+        log.info(
+            "Sequence generation complete",
+            total_records=len(all_records),
+            unique_users=unique_users,
+            fraud_transactions=len(fraud_records),
+            train_eligible_records=len(train_eligible),
+            eval_only_records=len(all_metadata) - len(train_eligible),
+        )
 
     # Log fraud type breakdown
-    fraud_breakdown = {}
-    for record in fraudulent_records:
-        fraud_type = record.fraud_type or "unknown"
-        fraud_breakdown[fraud_type] = fraud_breakdown.get(fraud_type, 0) + 1
+    fraud_breakdown: dict[str, int] = {}
+    for record in all_records:
+        if record.is_fraudulent:
+            fraud_type = record.fraud_type or "unknown"
+            fraud_breakdown[fraud_type] = fraud_breakdown.get(fraud_type, 0) + 1
 
     if fraud_breakdown:
         log.info("Fraud type breakdown", **fraud_breakdown)
@@ -189,7 +234,16 @@ def seed(
 
         with db.get_session() as session:
             inserted = db.batch_insert(session, db_records, batch_size=batch_size)
-            log.info("Database insert complete", records_inserted=inserted)
+            log.info("Records inserted", count=inserted)
+
+            # Insert evaluation metadata if available
+            if all_metadata:
+                log.info("Inserting evaluation metadata", count=len(all_metadata))
+                db_metadata = [metadata_to_db(m) for m in all_metadata]
+                meta_inserted = db.batch_insert(
+                    session, db_metadata, batch_size=batch_size
+                )
+                log.info("Metadata inserted", count=meta_inserted)
 
     except Exception as e:
         log.error(
@@ -200,18 +254,15 @@ def seed(
     # Final summary
     log.info(
         "Seeding complete",
-        total_profiles=len(all_records),
-        legitimate_profiles=len(legitimate_records),
-        fraud_profiles=len(fraudulent_records),
-        fraud_rate_actual=round(len(fraudulent_records) / len(all_records), 4)
-        if all_records
-        else 0,
+        total_records=len(all_records),
+        evaluation_metadata=len(all_metadata),
     )
 
-    typer.echo(
-        f"\nSuccessfully generated and inserted {len(all_records)} profiles "
-        f"({len(fraudulent_records)} fraudulent, {len(legitimate_records)} legitimate)"
-    )
+    typer.echo(f"\nSuccessfully generated {len(all_records)} transaction records")
+    if all_metadata:
+        train_count = sum(1 for m in all_metadata if m.is_train_eligible)
+        typer.echo(f"  Train-eligible: {train_count}")
+        typer.echo(f"  Evaluation-only: {len(all_metadata) - train_count}")
 
 
 @app.command()
@@ -259,8 +310,13 @@ def stats(
     db = DatabaseSession(database_url=database_url)
 
     with db.get_session() as session:
-        # Total count
+        # Total records
         total = session.scalar(select(func.count(GeneratedRecordDB.id)))
+
+        # Unique users
+        unique_users = session.scalar(
+            select(func.count(func.distinct(GeneratedRecordDB.user_id)))
+        )
 
         # Fraud count
         fraud = session.scalar(
@@ -276,9 +332,18 @@ def stats(
             .group_by(GeneratedRecordDB.fraud_type)
         ).all()
 
+        # Evaluation metadata stats
+        eval_total = session.scalar(select(func.count(EvaluationMetadataDB.id)))
+        train_eligible = session.scalar(
+            select(func.count(EvaluationMetadataDB.id)).where(
+                EvaluationMetadataDB.is_train_eligible.is_(True)
+            )
+        )
+
     log.info(
         "Database statistics",
         total_records=total,
+        unique_users=unique_users,
         fraudulent=fraud,
         legitimate=total - fraud if total else 0,
         fraud_rate=round(fraud / total, 4) if total else 0,
@@ -286,6 +351,7 @@ def stats(
 
     typer.echo("\nDatabase Statistics:")
     typer.echo(f"  Total records: {total}")
+    typer.echo(f"  Unique users: {unique_users}")
     typer.echo(f"  Legitimate: {total - fraud if total else 0}")
     typer.echo(f"  Fraudulent: {fraud}")
     typer.echo(f"  Fraud rate: {round(fraud / total * 100, 2) if total else 0}%")
@@ -294,6 +360,12 @@ def stats(
         typer.echo("\nFraud Type Breakdown:")
         for fraud_type, count in fraud_types:
             typer.echo(f"  {fraud_type}: {count}")
+
+    if eval_total:
+        typer.echo("\nEvaluation Metadata:")
+        typer.echo(f"  Total records: {eval_total}")
+        typer.echo(f"  Train-eligible: {train_eligible}")
+        typer.echo(f"  Evaluation-only: {eval_total - train_eligible}")
 
 
 if __name__ == "__main__":

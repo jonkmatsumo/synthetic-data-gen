@@ -29,6 +29,7 @@ class GeneratedRecordDB(Base):
     # Primary key
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     record_id: Mapped[str] = mapped_column(String(50), unique=True, nullable=False)
+    user_id: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
 
     # PII fields
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -166,4 +167,58 @@ class IdentityChangeRecord(Base):
     has_recent_change: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, nullable=False
+    )
+
+
+class EvaluationMetadataDB(Base):
+    """Evaluation metadata for model training/testing splits.
+
+    This table tracks temporal relationships between transactions and fraud events.
+    Used for evaluation only - should NOT be used as training features.
+    """
+
+    __tablename__ = "evaluation_metadata"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    record_id: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+
+    # Sequence tracking
+    sequence_number: Mapped[int] = mapped_column(
+        Integer, nullable=False, comment="Transaction order for this user (1-indexed)"
+    )
+
+    # Fraud timing
+    fraud_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True, comment="When fraud was confirmed for this user"
+    )
+
+    # Pre/post fraud flags
+    is_pre_fraud: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        comment="Transaction occurred before fraud detection",
+    )
+
+    days_to_fraud: Mapped[float | None] = mapped_column(
+        Float,
+        nullable=True,
+        comment="Days until fraud event (negative if after)",
+    )
+
+    # Training eligibility
+    is_train_eligible: Mapped[bool] = mapped_column(
+        Boolean,
+        default=True,
+        index=True,
+        comment="Can be used for training (False for post-fraud records)",
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_eval_user_sequence", "user_id", "sequence_number"),
+        Index("ix_eval_train_eligible", "is_train_eligible", "is_pre_fraud"),
     )

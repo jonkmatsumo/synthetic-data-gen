@@ -54,6 +54,57 @@ class IdentityChangeInfo(BaseModel):
         return False
 
 
+class EvaluationMetadata(BaseModel):
+    """Metadata for model evaluation (not used in training).
+
+    Tracks temporal relationships between transactions and fraud events
+    to enable proper train/test splitting and model evaluation.
+    """
+
+    user_id: str = Field(
+        ...,
+        description="Persistent user identifier across transactions",
+        examples=["user_abc123", "user_xyz789"],
+    )
+
+    record_id: str = Field(
+        ...,
+        description="FK to generated_records",
+        examples=["rec_abc123"],
+    )
+
+    sequence_number: int = Field(
+        ...,
+        ge=1,
+        description="Transaction order for this user (1-indexed)",
+        examples=[1, 5, 12],
+    )
+
+    fraud_confirmed_at: datetime | None = Field(
+        default=None,
+        description="When fraud was confirmed/reported for this user",
+        examples=[None, datetime(2024, 1, 20, 9, 0, 0)],
+    )
+
+    is_pre_fraud: bool = Field(
+        default=True,
+        description="Transaction occurred before fraud detection",
+        examples=[True, False],
+    )
+
+    days_to_fraud: float | None = Field(
+        default=None,
+        description="Days until fraud event (negative if after, null if no fraud)",
+        examples=[None, 5.5, -2.0],
+    )
+
+    is_train_eligible: bool = Field(
+        default=True,
+        description="Whether this record can be used for training",
+        examples=[True, False],
+    )
+
+
 class GeneratedRecord(BaseModel):
     """Complete generated record combining all metrics and PII."""
 
@@ -62,6 +113,12 @@ class GeneratedRecord(BaseModel):
         ...,
         description="Unique identifier for this record",
         examples=["rec_abc123", "rec_xyz789"],
+    )
+
+    user_id: str = Field(
+        ...,
+        description="Persistent user identifier linking transactions",
+        examples=["user_abc123", "user_xyz789"],
     )
 
     # PII fields
