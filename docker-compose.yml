@@ -63,11 +63,16 @@ services:
       - API_BASE_URL=http://api:8000
       - DATABASE_URL=postgresql://${POSTGRES_USER:-synthetic}:${POSTGRES_PASSWORD:-synthetic_dev_password}@db:5432/${POSTGRES_DB:-synthetic_data}
       - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
     depends_on:
       api:
         condition: service_healthy
       db:
         condition: service_healthy
+      mlflow:
+        condition: service_started
 
   minio:
     image: minio/minio:latest

@@ -1,8 +1,9 @@
 """ACH Risk Inspector Dashboard.
 
-A Streamlit dashboard for fraud risk analysis with two modes:
+A Streamlit dashboard for fraud risk analysis with three modes:
 - Live Scoring: Real-time transaction evaluation via API
 - Historical Analytics: Analysis of historical data from database
+- Model Lab: Train models and manage the model registry
 
 NOTE: This service is isolated and does NOT import from src.model or src.generator.
 """
@@ -20,6 +21,12 @@ from data_service import (
     fetch_recent_alerts,
     fetch_transaction_details,
     predict_risk,
+)
+from mlflow_utils import (
+    check_mlflow_connection,
+    get_experiment_runs,
+    get_production_model_version,
+    promote_to_production,
 )
 from plotly.subplots import make_subplots
 
@@ -324,6 +331,126 @@ def render_analytics() -> None:
         )
 
 
+def render_model_lab() -> None:
+    """Render the Model Lab page.
+
+    This page provides model training and registry management:
+    - Train new models with configurable hyperparameters
+    - View experiment runs and metrics
+    - Promote models to production
+    """
+    st.header("Model Lab")
+    st.markdown("Train models and manage the model registry.")
+
+    # Check MLflow connection
+    mlflow_connected = check_mlflow_connection()
+    if not mlflow_connected:
+        st.error(
+            "Cannot connect to MLflow tracking server. "
+            "Make sure the MLflow service is running."
+        )
+        return
+
+    st.success("Connected to MLflow tracking server")
+
+    # --- Section A: Train New Model ---
+    st.subheader("Train New Model")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        max_depth = st.slider(
+            "Max Depth",
+            min_value=2,
+            max_value=12,
+            value=6,
+            step=1,
+            help="Maximum depth of XGBoost trees",
+        )
+
+    with col2:
+        training_window = st.slider(
+            "Training Window (days)",
+            min_value=7,
+            max_value=90,
+            value=30,
+            step=7,
+            help="Number of days before today for training cutoff",
+        )
+
+    train_clicked = st.button("Start Training", type="primary")
+
+    if train_clicked:
+        with st.spinner("Training model... This may take a moment."):
+            try:
+                # Import here to avoid circular imports and keep UI isolated
+                import sys
+
+                sys.path.insert(0, "/app/src")
+                from model.train import train_model
+
+                run_id = train_model(
+                    max_depth=max_depth,
+                    training_window_days=training_window,
+                )
+                st.success(f"Training complete! Run ID: `{run_id}`")
+                st.balloons()
+            except ValueError as e:
+                st.error(f"Training failed: {e}")
+            except Exception as e:
+                st.error(f"Unexpected error: {e}")
+
+    st.markdown("---")
+
+    # --- Section B: Model Registry ---
+    st.subheader("Model Registry")
+
+    # Show current production model
+    prod_version = get_production_model_version()
+    if prod_version:
+        st.info(f"Current Production Model: Version {prod_version}")
+    else:
+        st.warning("No production model deployed yet.")
+
+    # Fetch and display experiment runs
+    runs_df = get_experiment_runs()
+
+    if len(runs_df) > 0:
+        st.markdown("**Experiment Runs** (sorted by PR-AUC)")
+
+        st.dataframe(
+            runs_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        st.markdown("---")
+
+        # Promote to production
+        st.markdown("**Promote to Production**")
+
+        run_ids = runs_df["Run ID"].tolist()
+        selected_run = st.selectbox(
+            "Select Run ID to promote",
+            options=run_ids,
+            index=0,
+            help="Choose a model run to promote to production",
+        )
+
+        promote_clicked = st.button("Promote to Production", type="secondary")
+
+        if promote_clicked and selected_run:
+            with st.spinner("Promoting model..."):
+                result = promote_to_production(selected_run)
+
+            if result["success"]:
+                st.success(result["message"])
+            else:
+                st.error(result["message"])
+    else:
+        st.info("No experiment runs found. Train a model to see results here.")
+
+
 def main() -> None:
     """Main application entry point."""
     # Sidebar navigation
@@ -332,7 +459,7 @@ def main() -> None:
 
     page = st.sidebar.radio(
         "Navigation",
-        options=["Live Scoring (API)", "Historical Analytics (DB)"],
+        options=["Live Scoring (API)", "Historical Analytics (DB)", "Model Lab"],
         index=0,
     )
 
@@ -345,8 +472,10 @@ def main() -> None:
     # Render selected page
     if page == "Live Scoring (API)":
         render_live_scoring()
-    else:
+    elif page == "Historical Analytics (DB)":
         render_analytics()
+    else:
+        render_model_lab()
 
 
 if __name__ == "__main__":
