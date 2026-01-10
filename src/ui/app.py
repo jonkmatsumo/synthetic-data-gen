@@ -7,7 +7,9 @@ A Streamlit dashboard for fraud risk analysis with two modes:
 NOTE: This service is isolated and does NOT import from src.model or src.generator.
 """
 
+import json
 import os
+import time
 
 import plotly.express as px
 import plotly.graph_objects as go
@@ -17,6 +19,7 @@ from data_service import (
     fetch_fraud_summary,
     fetch_recent_alerts,
     fetch_transaction_details,
+    predict_risk,
 )
 from plotly.subplots import make_subplots
 
@@ -45,22 +48,89 @@ def render_live_scoring() -> None:
     st.header("Live Scoring")
     st.markdown("Submit transactions for real-time fraud risk evaluation.")
 
-    # Placeholder content
-    st.info("🚧 Live scoring interface coming soon...")
-
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("Transaction Input")
-        st.text_input("User ID", placeholder="user_abc123")
-        st.number_input("Amount", min_value=0.01, value=100.00, step=0.01)
-        st.selectbox("Currency", ["USD", "EUR", "GBP", "CAD", "AUD"])
-        st.text_input("Transaction ID", placeholder="txn_xyz789")
-        st.button("Evaluate Risk", type="primary")
+
+        user_id = st.text_input("User ID", value="user_001")
+        amount = st.number_input(
+            "Amount", min_value=0.01, value=100.00, step=0.01, format="%.2f"
+        )
+        currency = st.text_input("Currency", value="USD", disabled=True)
+
+        analyze_clicked = st.button("Analyze Risk", type="primary")
 
     with col2:
         st.subheader("Risk Assessment")
-        st.markdown("*Submit a transaction to see results*")
+
+        if analyze_clicked:
+            # Measure API latency
+            start_time = time.time()
+            result = predict_risk(user_id, amount, currency)
+            elapsed_ms = (time.time() - start_time) * 1000
+
+            if result is None:
+                st.error("API request failed. Is the API server running?")
+                st.caption(f"Latency: {elapsed_ms:.0f}ms")
+            else:
+                score = result.get("score", 0)
+
+                # Score gauge with color-coded risk level
+                if score < 10:
+                    st.markdown(
+                        "<h1 style='color: #2ecc71; text-align: center;'>LOW RISK</h1>",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f"<h2 style='color: #2ecc71; text-align: center;'>"
+                        f"Score: {score}</h2>",
+                        unsafe_allow_html=True,
+                    )
+                elif score < 80:
+                    st.markdown(
+                        "<h1 style='color: #f39c12; text-align: center;'>"
+                        "MEDIUM RISK</h1>",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f"<h2 style='color: #f39c12; text-align: center;'>"
+                        f"Score: {score}</h2>",
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        "<h1 style='color: #e74c3c; text-align: center;'>"
+                        "HIGH RISK</h1>",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown(
+                        f"<h2 style='color: #e74c3c; text-align: center;'>"
+                        f"Score: {score}</h2>",
+                        unsafe_allow_html=True,
+                    )
+
+                st.markdown("---")
+
+                # Risk components
+                risk_components = result.get("risk_components", [])
+                if risk_components:
+                    st.markdown("**Risk Factors:**")
+                    for component in risk_components:
+                        label = component.get("label", "unknown")
+                        st.caption(f"- {label}")
+                else:
+                    st.caption("No specific risk factors identified.")
+
+                # Latency display
+                st.markdown("---")
+                st.caption(f"Latency: {elapsed_ms:.0f}ms")
+
+                # Raw JSON expander
+                with st.expander("View Raw API Response"):
+                    st.json(json.dumps(result, indent=2, default=str))
+        else:
+            st.markdown("*Submit a transaction to see results*")
 
 
 def render_analytics() -> None:
