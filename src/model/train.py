@@ -61,14 +61,20 @@ def train_model(
     if split.test_size == 0:
         raise ValueError("No test data available. Adjust training_window_days.")
 
+    # Check for positive samples in training set
+    n_negative = (split.y_train == 0).sum()
+    n_positive = (split.y_train == 1).sum()
+
+    if n_positive == 0:
+        raise ValueError(
+            f"No fraud samples in training set (cutoff: {training_cutoff_date.date()}). "
+            f"Either try a smaller training_window_days (current: {training_window_days}), "
+            f"or regenerate data with: docker compose run --rm generator uv run python src/main.py seed --drop-tables"
+        )
+
     # Calculate scale_pos_weight if not provided
     if scale_pos_weight is None:
-        n_negative = (split.y_train == 0).sum()
-        n_positive = (split.y_train == 1).sum()
-        if n_positive > 0:
-            scale_pos_weight = n_negative / n_positive
-        else:
-            scale_pos_weight = 1.0
+        scale_pos_weight = n_negative / n_positive
 
     with mlflow.start_run() as run:
         # Log parameters

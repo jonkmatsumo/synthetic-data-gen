@@ -534,8 +534,12 @@ class DataGenerator:
 
         # Generate timestamps spread across the history period
         if is_fraud_user:
-            # Reserve last portion for fraud event
-            fraud_day = history_days - int(self.rng.integers(1, 10))
+            # Place fraud event anywhere in the history, leaving room for pre-fraud txns
+            # Fraud can occur from day 10 to day (history_days - 5) to ensure
+            # there's history before and some buffer for post-fraud transactions
+            min_fraud_day = min(10, history_days // 4)
+            max_fraud_day = max(min_fraud_day + 1, history_days - 5)
+            fraud_day = int(self.rng.integers(min_fraud_day, max_fraud_day))
             fraud_time = start_date + timedelta(days=fraud_day)
             fraud_confirmed_at = fraud_time + timedelta(
                 hours=float(self.rng.uniform(1, 48))
