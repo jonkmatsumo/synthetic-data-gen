@@ -55,3 +55,6 @@ config/*.yaml
 # Environment files
 .env
 !.env.example
+
+# MLflow artifacts
+mlflow_artifacts/
