@@ -4,11 +4,42 @@ This API provides idempotent risk assessment for transactions.
 It does not modify transaction state - it only provides an evaluation.
 """
 
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
+from api.model_manager import get_model_manager
 from api.schemas import HealthResponse, SignalRequest, SignalResponse
 from api.services import get_evaluator
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan - load model on startup."""
+    # Startup: Load the production model
+    logger.info("Starting up - loading production model...")
+    manager = get_model_manager()
+    success = manager.load_production_model()
+
+    if success:
+        logger.info(
+            f"Model loaded successfully: version={manager.model_version}, "
+            f"source={manager.model_source}"
+        )
+    else:
+        logger.warning("No model loaded - API will use rule-based evaluation only")
+
+    yield
+
+    # Shutdown: cleanup if needed
+    logger.info("Shutting down...")
+
 
 app = FastAPI(
     title="Fraud Signal API",
@@ -16,6 +47,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 
@@ -26,11 +58,16 @@ async def health_check() -> HealthResponse:
     Returns:
         HealthResponse with status and model information.
     """
+    manager = get_model_manager()
     evaluator = get_evaluator()
+
+    # Use model manager version if available, otherwise fall back to evaluator
+    version = manager.model_version if manager.model_loaded else evaluator.model_version
+
     return HealthResponse(
         status="healthy",
-        model_loaded=True,
-        version=evaluator.model_version,
+        model_loaded=manager.model_loaded,
+        version=version,
     )
 
 

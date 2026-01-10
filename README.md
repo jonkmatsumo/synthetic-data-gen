@@ -108,15 +108,23 @@ docker compose down
 | Dashboard | http://localhost:8501 | Streamlit UI for risk inspection |
 | API | http://localhost:8000 | FastAPI signal evaluation |
 | API Docs | http://localhost:8000/docs | Swagger UI |
+| MLflow | http://localhost:5000 | Experiment tracking and model registry |
+| MinIO Console | http://localhost:9001 | Object storage for model artifacts |
+| MinIO API | http://localhost:9000 | S3-compatible API |
 | Database | localhost:5432 | PostgreSQL |
 
 ## Dashboard
 
-The Streamlit dashboard provides two modes for fraud risk analysis:
+The Streamlit dashboard provides three modes for fraud risk analysis:
 
 ### Live Scoring (API)
 
-Submit transactions for real-time fraud risk evaluation via the signal API. Enter user ID, amount, currency, and transaction ID to get instant risk scores.
+Submit transactions for real-time fraud risk evaluation via the signal API:
+- Enter User ID, Amount, and Currency
+- Click "Analyze Risk" to get instant scoring
+- Color-coded risk gauge (Green < 10, Yellow 10-79, Red >= 80)
+- Displays risk factors and API latency
+- Expandable raw JSON response for debugging
 
 ### Historical Analytics (DB)
 
@@ -139,6 +147,40 @@ Analyze historical transaction patterns and fraud metrics from the database:
 - High-risk transactions (computed risk score >= 80)
 - Shows Record ID, User ID, Timestamp, Amount, Risk Score, Confirmed Fraud, Fraud Type
 - Risk score computed from: velocity, amount ratio, balance volatility, merchant risk, off-hours transactions
+
+### Model Lab
+
+Train models and manage the model registry:
+
+**Train New Model:**
+- Configurable hyperparameters via sliders (Max Depth, Training Window)
+- Click "Start Training" to train XGBoost model with MLflow tracking
+- Displays Run ID on successful training
+
+**Model Registry:**
+- Shows current production model version
+- Displays experiment runs sorted by PR-AUC
+- "Promote to Production" to transition model versions
+
+## MLflow Training
+
+Train models with experiment tracking and artifact storage:
+
+```bash
+# Train with default settings (30-day window)
+uv run python src/model/train.py
+
+# Train with custom window
+uv run python src/model/train.py 60
+```
+
+**What gets logged:**
+- Parameters: max_depth, scale_pos_weight, training_window_days
+- Metrics: precision, recall, pr_auc
+- Artifacts: model binary, reference_data.parquet (for drift detection)
+- Model registered to `ach-fraud-detection` in MLflow registry
+
+**View experiments:** Navigate to http://localhost:5000 to see runs, compare metrics, and manage model versions.
 
 ## API Reference
 
@@ -414,16 +456,19 @@ synthetic-data-gen/
 │   ├── api/                             # FastAPI application
 │   │   ├── __init__.py
 │   │   ├── main.py                      # API routes and app
+│   │   ├── model_manager.py             # Dynamic model loading from MLflow/MinIO
 │   │   ├── schemas.py                   # Pydantic request/response models
 │   │   └── services.py                  # Signal evaluation logic
 │   ├── model/                           # ML model utilities
 │   │   ├── __init__.py
 │   │   ├── loader.py                    # DataLoader for train/test splits
+│   │   ├── train.py                     # MLflow-enabled training pipeline
 │   │   └── evaluate.py                  # Score calibration and evaluation
 │   ├── ui/                              # Streamlit dashboard
 │   │   ├── Dockerfile                   # Dashboard container
 │   │   ├── app.py                       # Dashboard application
-│   │   └── data_service.py              # Database and API client layer
+│   │   ├── data_service.py              # Database and API client layer
+│   │   └── mlflow_utils.py              # MLflow client helpers
 │   ├── generator/
 │   │   ├── __init__.py                  # Stateful generator exports
 │   │   └── core.py                      # UserSimulator, fraud profiles
@@ -461,7 +506,8 @@ synthetic-data-gen/
 │   └── test_pipeline.py                 # Basic tests
 ├── config/                              # Configuration files
 ├── scripts/
-│   └── wait-for-it.sh                   # DB readiness script
+│   ├── wait-for-it.sh                   # DB readiness script
+│   └── init-mlflow-db.sql               # Creates mlflow_db on startup
 ├── .github/
 │   └── workflows/
 │       └── ci.yml                       # GitHub Actions CI
@@ -484,9 +530,12 @@ synthetic-data-gen/
 | `src/api/main.py` | FastAPI application with `/evaluate/signal` endpoint |
 | `src/api/services.py` | Signal evaluation logic and feature processing |
 | `src/model/loader.py` | DataLoader with temporal splitting and label maturity |
+| `src/model/train.py` | MLflow-enabled XGBoost training pipeline |
 | `src/model/evaluate.py` | Score calibration and impact analysis |
+| `src/api/model_manager.py` | Dynamic model loading from MLflow/MinIO with fallback |
 | `src/ui/app.py` | Streamlit dashboard for risk inspection |
 | `src/ui/data_service.py` | Database queries and API client for dashboard |
+| `src/ui/mlflow_utils.py` | MLflow client helpers for Model Lab |
 | `src/generator/core.py` | Stateful UserSimulator, BustOutProfile, SleeperProfile |
 | `src/pipeline/materialize_features.py` | Feature materialization with SQL window functions |
 | `src/synthetic_pipeline/generator.py` | Transaction data generation with fraud patterns |
@@ -495,7 +544,7 @@ synthetic-data-gen/
 | `src/synthetic_pipeline/db/session.py` | Database connection pooling and batch inserts |
 | `src/synthetic_pipeline/db/migrations/*.sql` | SQL migration scripts |
 | `src/synthetic_pipeline/models/*.py` | Pydantic validation models |
-| `docker-compose.yml` | Docker services (db, api, dashboard) |
+| `docker-compose.yml` | Docker services (db, api, dashboard, mlflow, minio) |
 | `pyproject.toml` | Dependencies and project metadata |
 
 ## Environment Variables
@@ -509,3 +558,7 @@ synthetic-data-gen/
 | `POSTGRES_PORT` | 5432 | Database port |
 | `DATABASE_URL` | (built from above) | Full connection URL |
 | `API_BASE_URL` | http://localhost:8000 | API base URL (for dashboard) |
+| `MLFLOW_TRACKING_URI` | http://localhost:5000 | MLflow tracking server URL |
+| `MLFLOW_S3_ENDPOINT_URL` | http://minio:9000 | MinIO S3 endpoint (Docker) |
+| `AWS_ACCESS_KEY_ID` | minioadmin | MinIO access key |
+| `AWS_SECRET_ACCESS_KEY` | minioadmin | MinIO secret key |
