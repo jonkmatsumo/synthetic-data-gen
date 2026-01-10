@@ -51,7 +51,7 @@ services:
       db:
         condition: service_healthy
       mlflow:
-        condition: service_started
+        condition: service_healthy
       minio:
         condition: service_healthy
     healthcheck:
@@ -81,7 +81,7 @@ services:
       db:
         condition: service_healthy
       mlflow:
-        condition: service_started
+        condition: service_healthy
 
   minio:
     image: minio/minio:latest
@@ -117,7 +117,9 @@ services:
       "
 
   mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.14.1
+    build:
+      context: .
+      dockerfile: mlflow.Dockerfile
     container_name: synthetic-data-mlflow
     ports:
       - "${MLFLOW_PORT:-5005}:5000"
@@ -136,6 +138,12 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:5000/health')\""]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
 
 volumes:
   postgres_data:
