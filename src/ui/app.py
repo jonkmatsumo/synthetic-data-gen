@@ -405,7 +405,96 @@ def render_model_lab() -> None:
 
     st.markdown("---")
 
-    # --- Section B: Model Registry ---
+    # --- Section B: Data Management ---
+    st.subheader("Data Management")
+    st.markdown("Generate synthetic training data or clear existing data.")
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        num_users = st.slider(
+            "Number of Users",
+            min_value=100,
+            max_value=5000,
+            value=500,
+            step=100,
+            help="Number of unique users to generate",
+        )
+
+    with col2:
+        fraud_rate = st.slider(
+            "Fraud Rate",
+            min_value=0.01,
+            max_value=0.20,
+            value=0.05,
+            step=0.01,
+            format="%.2f",
+            help="Fraction of users with fraud events",
+        )
+
+    drop_existing = st.checkbox(
+        "Drop existing data before generating",
+        value=True,
+        help="If checked, existing data will be deleted before generating new data",
+    )
+
+    col_gen, col_clear = st.columns(2)
+
+    with col_gen:
+        generate_clicked = st.button("Generate Data", type="primary")
+
+    with col_clear:
+        clear_clicked = st.button("Clear All Data", type="secondary")
+
+    if generate_clicked:
+        with st.spinner(f"Generating data for {num_users} users..."):
+            try:
+                import requests
+
+                response = requests.post(
+                    f"{API_BASE_URL}/data/generate",
+                    json={
+                        "num_users": num_users,
+                        "fraud_rate": fraud_rate,
+                        "drop_existing": drop_existing,
+                    },
+                    timeout=300,
+                )
+                result = response.json()
+
+                if result.get("success"):
+                    st.success(
+                        f"Generated {result.get('total_records')} records "
+                        f"({result.get('fraud_records')} fraud). "
+                        f"Materialized {result.get('features_materialized')} feature snapshots."
+                    )
+                else:
+                    st.error(f"Generation failed: {result.get('error')}")
+            except requests.exceptions.RequestException as e:
+                st.error(f"API request failed: {e}")
+
+    if clear_clicked:
+        with st.spinner("Clearing all data..."):
+            try:
+                import requests
+
+                response = requests.delete(
+                    f"{API_BASE_URL}/data/clear",
+                    timeout=60,
+                )
+                result = response.json()
+
+                if result.get("success"):
+                    tables = ", ".join(result.get("tables_cleared", []))
+                    st.success(f"Cleared tables: {tables}")
+                else:
+                    st.error(f"Clear failed: {result.get('error')}")
+            except requests.exceptions.RequestException as e:
+                st.error(f"API request failed: {e}")
+
+    st.markdown("---")
+
+    # --- Section C: Model Registry ---
     st.subheader("Model Registry")
 
     # Show current production model
