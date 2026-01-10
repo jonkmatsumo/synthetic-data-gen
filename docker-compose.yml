@@ -110,9 +110,9 @@ services:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-      /usr/bin/mc config host add myminio http://minio:9000 minioadmin minioadmin;
-      /usr/bin/mc mb myminio/mlflow-artifacts;
-      /usr/bin/mc anonymous set download myminio/mlflow-artifacts;
+      /usr/bin/mc alias set myminio http://minio:9000 minioadmin minioadmin;
+      /usr/bin/mc mb --ignore-existing myminio/mlflow-artifacts;
+      /usr/bin/mc anonymous set public myminio/mlflow-artifacts;
       exit 0;
       "
 
@@ -133,6 +133,7 @@ services:
       --backend-store-uri postgresql://${POSTGRES_USER:-synthetic}:${POSTGRES_PASSWORD:-synthetic_dev_password}@db:5432/mlflow_db
       --default-artifact-root s3://mlflow-artifacts/
       --host 0.0.0.0
+      --allowed-hosts "*"
     depends_on:
       db:
         condition: service_healthy

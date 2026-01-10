@@ -9,11 +9,15 @@ from typing import Any
 
 import mlflow
 import pandas as pd
+import requests
 from mlflow import MlflowClient
 from mlflow.exceptions import MlflowException
 
 # MLflow configuration from environment
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://localhost:5000")
+
+# API configuration (for model reload)
+API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 
 # Set tracking URI
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -174,9 +178,12 @@ def promote_to_production(
             stage="Production",
         )
 
+        # Trigger model reload in the API
+        reload_message = _trigger_api_model_reload()
+
         return {
             "success": True,
-            "message": f"Model version {target_version} promoted to Production",
+            "message": f"Model version {target_version} promoted to Production. {reload_message}",
             "version": target_version,
         }
 
@@ -185,6 +192,25 @@ def promote_to_production(
             "success": False,
             "message": f"MLflow error: {e}",
         }
+
+
+def _trigger_api_model_reload() -> str:
+    """Trigger the API to reload the production model.
+
+    Returns:
+        Status message about the reload.
+    """
+    try:
+        response = requests.post(f"{API_BASE_URL}/reload-model", timeout=30)
+        result = response.json()
+
+        if result.get("success"):
+            version = result.get("version", "unknown")
+            return f"API reloaded model {version}."
+        else:
+            return "API model reload failed."
+    except Exception as e:
+        return f"Could not trigger API reload: {e}"
 
 
 def check_mlflow_connection() -> bool:

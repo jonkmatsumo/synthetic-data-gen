@@ -16,6 +16,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from data_service import (
+    check_api_health,
     fetch_daily_stats,
     fetch_fraud_summary,
     fetch_recent_alerts,
@@ -25,6 +26,7 @@ from data_service import (
 from mlflow_utils import (
     check_mlflow_connection,
     get_experiment_runs,
+    get_model_versions,
     get_production_model_version,
     promote_to_production,
 )
@@ -54,6 +56,21 @@ def render_live_scoring() -> None:
     """
     st.header("Live Scoring")
     st.markdown("Submit transactions for real-time fraud risk evaluation.")
+
+    # Show current model status
+    api_health = check_api_health()
+    if api_health:
+        model_loaded = api_health.get("model_loaded", False)
+        model_version = api_health.get("version", "unknown")
+
+        if model_loaded:
+            st.success(f"Live Model: **{model_version}** (ML model active)")
+        else:
+            st.warning(f"Live Model: **{model_version}** (rule-based fallback)")
+    else:
+        st.error("API unavailable - cannot determine model status")
+
+    st.markdown("---")
 
     col1, col2 = st.columns(2)
 
@@ -140,6 +157,75 @@ def render_live_scoring() -> None:
             st.markdown("*Submit a transaction to see results*")
 
 
+def _render_model_selector() -> None:
+    """Render model version selector with current production indicator.
+
+    Shows a dropdown of all available model versions with the production
+    model clearly marked. Currently for display purposes - future versions
+    could use this to compare model performance.
+    """
+    # Get API health for live model info
+    api_health = check_api_health()
+    live_model = None
+    if api_health and api_health.get("model_loaded"):
+        live_model = api_health.get("version", "unknown")
+
+    # Get production model from MLflow
+    prod_version = get_production_model_version()
+
+    # Get all model versions
+    all_versions = get_model_versions()
+
+    if not all_versions:
+        st.info("No models registered yet. Train a model in Model Lab to get started.")
+        return
+
+    # Build options list with indicators
+    options = []
+    for v in sorted(all_versions, key=lambda x: int(x["version"]), reverse=True):
+        version = v["version"]
+        stage = v["stage"]
+
+        # Build label with indicators
+        label = f"v{version}"
+        indicators = []
+
+        if stage == "Production":
+            indicators.append("PRODUCTION")
+        if live_model and live_model == f"v{version}":
+            indicators.append("LIVE")
+
+        if indicators:
+            label += f" ({', '.join(indicators)})"
+        elif stage != "None":
+            label += f" ({stage})"
+
+        options.append({"label": label, "version": version, "stage": stage})
+
+    # Display current live model status
+    col1, col2 = st.columns([2, 3])
+
+    with col1:
+        if live_model:
+            st.success(f"Live Model: **{live_model}**")
+        else:
+            st.warning("No ML model loaded (using rules)")
+
+    with col2:
+        # Model version dropdown
+        selected_idx = st.selectbox(
+            "View Model Version",
+            options=range(len(options)),
+            format_func=lambda i: options[i]["label"],
+            help="Select a model version to view its details. The LIVE model is currently serving predictions.",
+        )
+
+        if selected_idx is not None:
+            selected = options[selected_idx]
+            # Store in session state for potential future use
+            st.session_state["selected_model_version"] = selected["version"]
+
+
 def render_analytics() -> None:
     """Render the Historical Analytics (DB) page.
 
@@ -148,6 +234,11 @@ def render_analytics() -> None:
     """
     st.header("Historical Analytics")
     st.markdown("Analyze historical transaction patterns and fraud metrics.")
+
+    # --- Model Selection ---
+    _render_model_selector()
+
+    st.markdown("---")
 
     # Fetch data
     summary = fetch_fraud_summary()

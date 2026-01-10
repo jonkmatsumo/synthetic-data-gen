@@ -1,13 +1,20 @@
 """Business logic for signal evaluation."""
 
+import logging
+import os
 import uuid
 from dataclasses import dataclass, field
 from decimal import Decimal
 
 import numpy as np
+import pandas as pd
+from sqlalchemy import text
 
 from api.schemas import RiskComponent, SignalRequest, SignalResponse
 from model.evaluate import ScoreCalibrator
+from synthetic_pipeline.db.session import DatabaseSession
+
+logger = logging.getLogger(__name__)
 
 # Feature thresholds for risk component detection (based on percentiles)
 VELOCITY_HIGH_THRESHOLD = 5  # 24h transaction count threshold
@@ -38,10 +45,18 @@ class SignalEvaluator:
 
     This service is idempotent - it only assesses risk without modifying
     any transaction state.
+
+    Uses the trained ML model when available, falls back to rule-based scoring.
     """
 
     calibrator: ScoreCalibrator = field(default_factory=ScoreCalibrator)
     model_version: str = MODEL_VERSION
+    db_session: DatabaseSession | None = field(default=None)
+
+    def __post_init__(self):
+        """Initialize database session."""
+        if self.db_session is None:
+            self.db_session = DatabaseSession()
 
     def evaluate(self, request: SignalRequest) -> SignalResponse:
         """Evaluate fraud signal for a transaction.
@@ -52,14 +67,25 @@ class SignalEvaluator:
         Returns:
             SignalResponse with score and risk components.
         """
+        from api.model_manager import get_model_manager
+
         # Generate unique request ID
         request_id = f"req_{uuid.uuid4().hex[:12]}"
 
-        # Fetch features for the user
+        # Fetch features for the user from database
         features = self._fetch_features(request)
 
-        # Calculate raw probability from features
-        raw_probability = self._calculate_probability(features)
+        # Get model manager
+        manager = get_model_manager()
+
+        # Use ML model if available and features were found in DB
+        if manager.model_loaded and features.has_history:
+            raw_probability = self._predict_with_model(manager, features)
+            model_version = manager.model_version
+        else:
+            # Fall back to rule-based scoring
+            raw_probability = self._calculate_probability(features)
+            model_version = self.model_version
 
         # Calibrate to 1-99 score
         score = self._calibrate_score(raw_probability)
@@ -71,14 +97,37 @@ class SignalEvaluator:
             request_id=request_id,
             score=score,
             risk_components=risk_components,
-            model_version=self.model_version,
+            model_version=model_version,
         )
+
+    def _predict_with_model(self, manager, features: FeatureVector) -> float:
+        """Use the ML model for prediction.
+
+        Args:
+            manager: ModelManager with loaded model.
+            features: Feature vector from database.
+
+        Returns:
+            Probability of fraud.
+        """
+        try:
+            feature_dict = {
+                "velocity_24h": features.velocity_24h,
+                "amount_to_avg_ratio_30d": features.amount_to_avg_ratio_30d,
+                "balance_volatility_z_score": features.balance_volatility_z_score,
+            }
+            probability = manager.predict_single(feature_dict)
+            logger.debug(f"ML model prediction: {probability}")
+            return float(probability)
+        except Exception as e:
+            logger.warning(f"ML prediction failed, falling back to rules: {e}")
+            return self._calculate_probability(features)
 
     def _fetch_features(self, request: SignalRequest) -> FeatureVector:
         """Fetch features for the user from feature store.
 
-        In production, this would query the feature_snapshots table.
-        For now, we simulate feature retrieval with heuristics.
+        Queries the feature_snapshots table for the most recent features
+        for the given user. Falls back to simulated features if not found.
 
         Args:
             request: The signal request containing user_id.
@@ -86,7 +135,51 @@ class SignalEvaluator:
         Returns:
             FeatureVector with user features.
         """
-        # Simulate feature lookup - in production this queries the DB
+        try:
+            with self.db_session.get_session() as session:
+                # Get most recent feature snapshot for this user
+                query = text("""
+                    SELECT
+                        velocity_24h,
+                        amount_to_avg_ratio_30d,
+                        balance_volatility_z_score
+                    FROM feature_snapshots
+                    WHERE user_id = :user_id
+                    ORDER BY computed_at DESC
+                    LIMIT 1
+                """)
+                result = session.execute(query, {"user_id": request.user_id})
+                row = result.fetchone()
+
+                if row is not None:
+                    logger.debug(f"Found features for user {request.user_id}")
+                    return FeatureVector(
+                        velocity_24h=int(row.velocity_24h),
+                        amount_to_avg_ratio_30d=float(row.amount_to_avg_ratio_30d),
+                        balance_volatility_z_score=float(row.balance_volatility_z_score),
+                        bank_connections_24h=0,  # Not in feature_snapshots yet
+                        merchant_risk_score=0,  # Not in feature_snapshots yet
+                        has_history=True,
+                        transaction_amount=request.amount,
+                    )
+                else:
+                    logger.debug(f"No features found for user {request.user_id}")
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch features from DB: {e}")
+
+        # Fallback: Use simulated features for unknown users
+        return self._simulate_features(request)
+
+    def _simulate_features(self, request: SignalRequest) -> FeatureVector:
+        """Generate simulated features for users not in database.
+
+        Args:
+            request: The signal request containing user_id.
+
+        Returns:
+            FeatureVector with simulated features.
+        """
         # Use deterministic hash for consistent results per user
         user_hash = hash(request.user_id) % 1000
 
@@ -96,7 +189,6 @@ class SignalEvaluator:
         balance_z = -3.0 + (user_hash % 60) / 10.0
         connections = user_hash % 8
         merchant_risk = user_hash % 100
-        has_history = user_hash > 100
 
         return FeatureVector(
             velocity_24h=velocity,
@@ -104,7 +196,7 @@ class SignalEvaluator:
             balance_volatility_z_score=balance_z,
             bank_connections_24h=connections,
             merchant_risk_score=merchant_risk,
-            has_history=has_history,
+            has_history=False,  # Mark as no history since not in DB
             transaction_amount=request.amount,
         )
 

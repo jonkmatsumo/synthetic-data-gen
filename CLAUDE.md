@@ -75,6 +75,23 @@ Hierarchical composition: `AccountSnapshot` → `BehaviorMetrics` → `Connectio
 | Bust-Out | UserSimulator | Gradual buildup → sudden spike |
 | Sleeper ATO | UserSimulator | Long dormancy → burst → withdrawal |
 
+## Environment Configuration
+
+**IMPORTANT**: Always prioritize values from the `.env` file over defaults in README or code.
+
+- The `.env` file contains the actual configuration for the local environment
+- README shows generic defaults for documentation purposes
+- Docker Compose reads from `.env` and uses those values for port mappings and credentials
+- When troubleshooting connection issues, always check `.env` first for the actual ports being used
+
+Service ports are configured via environment variables:
+- `DB_PORT`: PostgreSQL external port
+- `API_PORT`: FastAPI server external port
+- `DASHBOARD_PORT`: Streamlit dashboard external port
+- `MLFLOW_PORT`: MLflow tracking server external port
+- `MINIO_API_PORT`: MinIO API external port
+- `MINIO_CONSOLE_PORT`: MinIO web console external port
+
 ## Key Conventions
 
 - **Point-in-time correctness**: All feature engineering uses window functions with strict temporal boundaries to prevent data leakage

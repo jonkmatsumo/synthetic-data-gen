@@ -6,6 +6,7 @@ It does not modify transaction state - it only provides an evaluation.
 
 import logging
 from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
@@ -23,9 +24,58 @@ from api.schemas import (
 )
 from api.services import get_evaluator
 
+if TYPE_CHECKING:
+    from synthetic_pipeline.db.models import EvaluationMetadataDB, GeneratedRecordDB
+    from synthetic_pipeline.models import EvaluationMetadata, GeneratedRecord
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+def _pydantic_to_db(record: "GeneratedRecord") -> "GeneratedRecordDB":
+    """Convert a Pydantic GeneratedRecord to SQLAlchemy model."""
+    from synthetic_pipeline.db.models import GeneratedRecordDB
+
+    return GeneratedRecordDB(
+        record_id=record.record_id,
+        user_id=record.user_id,
+        full_name=record.full_name,
+        email=record.email,
+        phone=record.phone,
+        transaction_timestamp=record.transaction_timestamp,
+        is_off_hours_txn=record.is_off_hours_txn,
+        available_balance=record.account.available_balance,
+        balance_to_transaction_ratio=record.account.balance_to_transaction_ratio,
+        avg_available_balance_30d=record.behavior.avg_available_balance_30d,
+        balance_volatility_z_score=record.behavior.balance_volatility_z_score,
+        bank_connections_count_24h=record.connection.bank_connections_count_24h,
+        bank_connections_count_7d=record.connection.bank_connections_count_7d,
+        bank_connections_avg_30d=record.connection.bank_connections_avg_30d,
+        amount=record.transaction.amount,
+        amount_to_avg_ratio=record.transaction.amount_to_avg_ratio,
+        merchant_risk_score=record.transaction.merchant_risk_score,
+        is_returned=record.transaction.is_returned,
+        email_changed_at=record.identity_changes.email_changed_at,
+        phone_changed_at=record.identity_changes.phone_changed_at,
+        is_fraudulent=record.is_fraudulent,
+        fraud_type=record.fraud_type,
+    )
+
+
+def _metadata_to_db(meta: "EvaluationMetadata") -> "EvaluationMetadataDB":
+    """Convert a Pydantic EvaluationMetadata to SQLAlchemy model."""
+    from synthetic_pipeline.db.models import EvaluationMetadataDB
+
+    return EvaluationMetadataDB(
+        user_id=meta.user_id,
+        record_id=meta.record_id,
+        sequence_number=meta.sequence_number,
+        fraud_confirmed_at=meta.fraud_confirmed_at,
+        is_pre_fraud=meta.is_pre_fraud,
+        days_to_fraud=meta.days_to_fraud,
+        is_train_eligible=meta.is_train_eligible,
+    )
 
 
 @asynccontextmanager
@@ -78,6 +128,37 @@ async def health_check() -> HealthResponse:
         model_loaded=manager.model_loaded,
         version=version,
     )
+
+
+@app.post("/reload-model", tags=["System"])
+async def reload_model() -> dict:
+    """Reload the production model from MLflow.
+
+    Call this endpoint after promoting a new model to production
+    to pick up the latest version without restarting the API.
+
+    Returns:
+        Dict with success status and model version.
+    """
+    manager = get_model_manager()
+    success = manager.load_production_model()
+
+    if success:
+        logger.info(f"Model reloaded: version={manager.model_version}")
+        return {
+            "success": True,
+            "model_loaded": True,
+            "version": manager.model_version,
+            "source": manager.model_source,
+        }
+    else:
+        logger.warning("Model reload failed")
+        return {
+            "success": False,
+            "model_loaded": False,
+            "version": None,
+            "source": "none",
+        }
 
 
 @app.post(
@@ -162,10 +243,7 @@ async def generate_data(request: GenerateDataRequest) -> GenerateDataResponse:
     """
     try:
         from pipeline.materialize_features import FeatureMaterializer
-        from synthetic_pipeline.db.models import (
-            EvaluationMetadataDB,
-            GeneratedRecordDB,
-        )
+        from synthetic_pipeline.db.models import Base
         from synthetic_pipeline.db.session import DatabaseSession
         from synthetic_pipeline.generator import DataGenerator
 
@@ -185,33 +263,26 @@ async def generate_data(request: GenerateDataRequest) -> GenerateDataResponse:
         with db_session.get_session() as session:
             if request.drop_existing:
                 # Drop and recreate tables
-                from synthetic_pipeline.db.models import Base
-
                 Base.metadata.drop_all(db_session.engine)
                 Base.metadata.create_all(db_session.engine)
             else:
                 # Just ensure tables exist
-                from synthetic_pipeline.db.models import Base
-
                 Base.metadata.create_all(db_session.engine)
 
             # Convert and insert records
-            db_records = [
-                GeneratedRecordDB.from_pydantic(record) for record in result.records
-            ]
+            db_records = [_pydantic_to_db(record) for record in result.records]
             session.bulk_save_objects(db_records)
 
             # Insert metadata
-            meta_records = [
-                EvaluationMetadataDB.from_pydantic(meta) for meta in result.metadata
-            ]
+            meta_records = [_metadata_to_db(meta) for meta in result.metadata]
             session.bulk_save_objects(meta_records)
 
             session.commit()
 
         # Materialize features
         materializer = FeatureMaterializer()
-        features_count = materializer.materialize_all()
+        materialize_stats = materializer.materialize_all()
+        features_count = materialize_stats.get("total_processed", 0)
 
         return GenerateDataResponse(
             success=True,

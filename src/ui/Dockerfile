@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir \
     psycopg2-binary>=2.9.0 \
     requests>=2.31.0 \
     plotly>=5.22.0 \
-    mlflow>=2.14.0 \
+    mlflow>=3.8.0 \
     boto3>=1.34.0
 
 # Copy only the UI application
