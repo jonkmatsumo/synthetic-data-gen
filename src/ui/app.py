@@ -383,22 +383,25 @@ def render_model_lab() -> None:
     if train_clicked:
         with st.spinner("Training model... This may take a moment."):
             try:
-                # Import here to avoid circular imports and keep UI isolated
-                import sys
+                import requests
 
-                sys.path.insert(0, "/app/src")
-                from model.train import train_model
-
-                run_id = train_model(
-                    max_depth=max_depth,
-                    training_window_days=training_window,
+                response = requests.post(
+                    f"{API_BASE_URL}/train",
+                    json={
+                        "max_depth": max_depth,
+                        "training_window_days": training_window,
+                    },
+                    timeout=300,  # Training can take a while
                 )
-                st.success(f"Training complete! Run ID: `{run_id}`")
-                st.balloons()
-            except ValueError as e:
-                st.error(f"Training failed: {e}")
-            except Exception as e:
-                st.error(f"Unexpected error: {e}")
+                result = response.json()
+
+                if result.get("success"):
+                    st.success(f"Training complete! Run ID: `{result.get('run_id')}`")
+                    st.balloons()
+                else:
+                    st.error(f"Training failed: {result.get('error')}")
+            except requests.exceptions.RequestException as e:
+                st.error(f"API request failed: {e}")
 
     st.markdown("---")
 

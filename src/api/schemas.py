@@ -104,3 +104,28 @@ class HealthResponse(BaseModel):
     status: str = Field(default="healthy")
     model_loaded: bool = Field(default=False)
     version: str = Field(default="0.1.0")
+
+
+class TrainRequest(BaseModel):
+    """Request schema for model training endpoint."""
+
+    max_depth: int = Field(
+        default=6,
+        ge=2,
+        le=12,
+        description="Maximum depth of XGBoost trees",
+    )
+    training_window_days: int = Field(
+        default=30,
+        ge=7,
+        le=90,
+        description="Number of days for training window",
+    )
+
+
+class TrainResponse(BaseModel):
+    """Response schema for model training endpoint."""
+
+    success: bool = Field(..., description="Whether training completed successfully")
+    run_id: str | None = Field(None, description="MLflow run ID if successful")
+    error: str | None = Field(None, description="Error message if training failed")

@@ -11,7 +11,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
 from api.model_manager import get_model_manager
-from api.schemas import HealthResponse, SignalRequest, SignalResponse
+from api.schemas import (
+    HealthResponse,
+    SignalRequest,
+    SignalResponse,
+    TrainRequest,
+    TrainResponse,
+)
 from api.services import get_evaluator
 
 # Configure logging
@@ -133,6 +139,37 @@ async def evaluate_signal(request: SignalRequest) -> SignalResponse:
             status_code=500,
             detail=f"Evaluation failed: {e!s}",
         ) from e
+
+
+@app.post(
+    "/train",
+    response_model=TrainResponse,
+    tags=["Training"],
+    summary="Train a new model",
+    description="Train a new XGBoost model with the specified hyperparameters.",
+)
+async def train_model_endpoint(request: TrainRequest) -> TrainResponse:
+    """Train a new model with specified parameters.
+
+    Args:
+        request: Training request with max_depth and training_window_days.
+
+    Returns:
+        TrainResponse with success status and run_id or error.
+    """
+    try:
+        from model.train import train_model
+
+        run_id = train_model(
+            max_depth=request.max_depth,
+            training_window_days=request.training_window_days,
+        )
+        return TrainResponse(success=True, run_id=run_id)
+    except ValueError as e:
+        return TrainResponse(success=False, error=str(e))
+    except Exception as e:
+        logger.exception("Training failed")
+        return TrainResponse(success=False, error=str(e))
 
 
 @app.exception_handler(Exception)

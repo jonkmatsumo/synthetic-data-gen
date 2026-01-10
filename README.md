@@ -1,572 +1,66 @@
-# synthetic-data-gen
+# Label Lag
 
-Synthetic data generation pipeline for fraud detection model training. Generates realistic transaction profiles with configurable fraud patterns.
+End-to-end ML system for fraud detection with realistic label delay simulation. Generates synthetic transaction data, trains models with MLflow tracking, and serves predictions via API.
 
-## How to Run
-
-### Prerequisites
-
-- Python 3.10+
-- Docker and Docker Compose (for PostgreSQL)
-- [uv](https://github.com/astral-sh/uv) package manager
-
-### Installation
+## Quick Start
 
 ```bash
-# Install uv (if not already installed)
-curl -LsSf https://astral.sh/uv/install.sh | sh
+# Start all services
+docker compose up -d
 
-# Install dependencies and pre-commit hooks
+# Generate synthetic data (inside generator container)
+docker compose exec generator uv run python src/main.py seed --users 1000 --fraud-rate 0.05
+```
+
+## Services
+
+| Service | URL | Description |
+|---------|-----|-------------|
+| Dashboard | http://localhost:8501 | Streamlit UI for risk analysis and model training |
+| API | http://localhost:8000 | FastAPI fraud scoring endpoint |
+| API Docs | http://localhost:8000/docs | Swagger UI |
+| MLflow | http://localhost:5005 | Experiment tracking and model registry |
+| MinIO | http://localhost:9001 | Object storage console (minioadmin/minioadmin) |
+| PostgreSQL | localhost:5432 | Database |
+
+All ports are configurable via `.env` file.
+
+## Development
+
+```bash
+# Install dependencies locally
 make install
-```
 
-### Start Database
-
-```bash
-# Start PostgreSQL container
-docker compose up -d db
-
-# Verify database is running
-docker compose ps
-```
-
-### Generate Data
-
-```bash
-# Generate 1000 profiles with 5% fraud rate (default)
-uv run python src/main.py seed
-
-# Custom generation with user sequences
-uv run python src/main.py seed --users 500 --fraud-rate 0.10
-
-# Legacy mode (single transaction per user)
-uv run python src/main.py seed --users 1000 --legacy
-
-# With all options
-uv run python src/main.py seed \
-  --users 1000 \
-  --fraud-rate 0.05 \
-  --seed 42 \
-  --batch-size 500 \
-  --drop-tables \
-  --verbose
-```
-
-### CLI Commands
-
-| Command | Description |
-|---------|-------------|
-| `seed` | Generate synthetic profiles and insert into database |
-| `init-db` | Initialize database schema without seeding |
-| `stats` | Show statistics about generated data |
-
-### Seed Command Options
-
-| Option | Short | Default | Description |
-|--------|-------|---------|-------------|
-| `--users` | `-u` | 100 | Number of unique users to generate |
-| `--fraud-rate` | `-f` | 0.05 | Fraction of users with fraud events (0.0-1.0) |
-| `--seed` | `-s` | None | Random seed for reproducibility |
-| `--batch-size` | `-b` | 500 | Batch size for database inserts |
-| `--database-url` | | env | Database URL (or set `DATABASE_URL`) |
-| `--drop-tables` | | False | Drop existing tables before seeding |
-| `--json-logs` | | False | Output logs in JSON format |
-| `--verbose` | `-v` | False | Enable verbose logging |
-| `--legacy` | | False | Use legacy mode (single transaction per user) |
-
-### Development
-
-```bash
 # Run tests
 make test
 
-# Run linting
+# Linting
 make lint
-
-# Fix lint issues
 make lint-fix
-
-# Clean build artifacts
-make clean
 ```
-
-### Run All Services
-
-```bash
-# Start all services (db, api, dashboard)
-docker compose up -d
-
-# View logs
-docker compose logs -f
-
-# Stop all services
-docker compose down
-```
-
-| Service | Default URL | Port Env Var | Description |
-|---------|-------------|--------------|-------------|
-| Dashboard | http://localhost:8501 | `DASHBOARD_PORT` | Streamlit UI for risk inspection |
-| API | http://localhost:8000 | `API_PORT` | FastAPI signal evaluation |
-| API Docs | http://localhost:8000/docs | `API_PORT` | Swagger UI |
-| MLflow | http://localhost:5005 | `MLFLOW_PORT` | Experiment tracking and model registry |
-| MinIO Console | http://localhost:9001 | `MINIO_CONSOLE_PORT` | Object storage for model artifacts |
-| MinIO API | http://localhost:9000 | `MINIO_API_PORT` | S3-compatible API |
-| Database | localhost:5432 | `DB_PORT` | PostgreSQL |
-
-**Note:** All ports are configurable via `.env` file to avoid conflicts with other projects.
-
-## Dashboard
-
-The Streamlit dashboard provides three modes for fraud risk analysis:
-
-### Live Scoring (API)
-
-Submit transactions for real-time fraud risk evaluation via the signal API:
-- Enter User ID, Amount, and Currency
-- Click "Analyze Risk" to get instant scoring
-- Color-coded risk gauge (Green < 10, Yellow 10-79, Red >= 80)
-- Displays risk factors and API latency
-- Expandable raw JSON response for debugging
-
-### Historical Analytics (DB)
-
-Analyze historical transaction patterns and fraud metrics from the database:
-
-**Global Metrics:**
-- Total Transactions Analyzed
-- Detected Fraud (High Risk) with fraud rate delta
-- Estimated False Positive Rate (alerts that aren't actual fraud)
-
-**Time Series Visualization:**
-- Dual-axis chart showing daily transaction volume (bars) and fraud count (line)
-- 30-day rolling view of trends
-
-**Amount Distribution:**
-- Histogram of transaction amounts colored by fraud status
-- Visual separation of fraudulent vs legitimate transactions
-
-**Recent Alerts Table:**
-- High-risk transactions (computed risk score >= 80)
-- Shows Record ID, User ID, Timestamp, Amount, Risk Score, Confirmed Fraud, Fraud Type
-- Risk score computed from: velocity, amount ratio, balance volatility, merchant risk, off-hours transactions
-
-### Model Lab
-
-Train models and manage the model registry:
-
-**Train New Model:**
-- Configurable hyperparameters via sliders (Max Depth, Training Window)
-- Click "Start Training" to train XGBoost model with MLflow tracking
-- Displays Run ID on successful training
-
-**Model Registry:**
-- Shows current production model version
-- Displays experiment runs sorted by PR-AUC
-- "Promote to Production" to transition model versions
-
-## MLflow Training
-
-Train models with experiment tracking and artifact storage:
-
-```bash
-# Train with default settings (30-day window)
-uv run python src/model/train.py
-
-# Train with custom window
-uv run python src/model/train.py 60
-```
-
-**What gets logged:**
-- Parameters: max_depth, scale_pos_weight, training_window_days
-- Metrics: precision, recall, pr_auc
-- Artifacts: model binary, reference_data.parquet (for drift detection)
-- Model registered to `ach-fraud-detection` in MLflow registry
-
-**View experiments:** Navigate to http://localhost:5000 to see runs, compare metrics, and manage model versions.
-
-## API Reference
-
-### Signal Evaluation
-
-Evaluate fraud risk for a transaction.
-
-**Endpoint:** `POST /evaluate/signal`
-
-**Request:**
-```json
-{
-  "user_id": "user_abc123",
-  "amount": 150.00,
-  "currency": "USD",
-  "client_transaction_id": "txn_xyz789"
-}
-```
-
-**Response:**
-```json
-{
-  "request_id": "req_123xyz",
-  "score": 85,
-  "risk_components": [
-    {"key": "velocity", "label": "high_transaction_velocity"},
-    {"key": "history", "label": "insufficient_history"}
-  ],
-  "model_version": "v1.0.0"
-}
-```
-
-**Score Interpretation:**
-- 1-20: Low risk (most transactions)
-- 21-50: Moderate risk
-- 51-80: Elevated risk
-- 81-99: High risk (rare)
-
-**Risk Components:**
-
-| Key | Label | Trigger |
-|-----|-------|---------|
-| `velocity` | high_transaction_velocity | velocity_24h > 5 |
-| `amount_ratio` | unusual_transaction_amount | amount ratio > 3.0 |
-| `balance` | low_balance_volatility | z-score < -2.0 |
-| `connections` | connection_burst_detected | connections_24h > 4 |
-| `merchant` | high_risk_merchant | merchant_risk > 70 |
-| `history` | insufficient_history | no transaction history |
-
-### Health Check
-
-**Endpoint:** `GET /health`
-
-**Response:**
-```json
-{
-  "status": "healthy",
-  "model_loaded": true,
-  "version": "v1.0.0"
-}
-```
-
-## Table and Feature Schemas
-
-### Generated Records Table (`generated_records`)
-
-Main denormalized table containing all transaction data.
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | INTEGER | Primary key (auto-increment) |
-| `record_id` | VARCHAR(50) | Unique record identifier |
-| `user_id` | VARCHAR(50) | User identifier (indexed) |
-| `full_name` | VARCHAR(255) | Account holder name |
-| `email` | VARCHAR(255) | Email address |
-| `phone` | VARCHAR(50) | Phone number |
-| `transaction_timestamp` | DATETIME | Transaction time |
-| `is_off_hours_txn` | BOOLEAN | True if 10pm-6am |
-| `available_balance` | NUMERIC(18,2) | Current balance |
-| `balance_to_transaction_ratio` | FLOAT | Balance / transaction amount |
-| `avg_available_balance_30d` | NUMERIC(18,2) | 30-day average balance |
-| `balance_volatility_z_score` | FLOAT | Volatility z-score (risk if < -2.5) |
-| `bank_connections_count_24h` | INTEGER | Connections in 24h (anomaly if > 4) |
-| `bank_connections_count_7d` | INTEGER | Connections in 7 days |
-| `bank_connections_avg_30d` | FLOAT | 30-day average connections |
-| `amount` | NUMERIC(18,2) | Transaction amount |
-| `amount_to_avg_ratio` | FLOAT | Amount / average (anomaly if > 5.0) |
-| `merchant_risk_score` | INTEGER | 0-100 (anomaly if > 80) |
-| `is_returned` | BOOLEAN | Transaction returned flag |
-| `email_changed_at` | DATETIME | Last email change time |
-| `phone_changed_at` | DATETIME | Last phone change time |
-| `is_fraudulent` | BOOLEAN | Fraud label (target) |
-| `fraud_type` | VARCHAR(50) | Type: liquidity_crunch, link_burst, ato, bust_out, sleeper_ato |
-| `created_at` | DATETIME | Record creation time |
-
-### Evaluation Metadata Table (`evaluation_metadata`)
-
-Tracks temporal relationships between transactions and fraud events for proper train/test splitting. **This table is for evaluation only - should NOT be used as training features.**
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `id` | INTEGER | Primary key (auto-increment) |
-| `user_id` | VARCHAR(50) | User identifier (indexed) |
-| `record_id` | VARCHAR(50) | Links to generated_records (indexed) |
-| `sequence_number` | INTEGER | Transaction order for user (1-indexed) |
-| `fraud_confirmed_at` | DATETIME | When fraud was confirmed (nullable) |
-| `is_pre_fraud` | BOOLEAN | Transaction occurred before fraud detection |
-| `days_to_fraud` | FLOAT | Days until fraud event (negative if after) |
-| `is_train_eligible` | BOOLEAN | Can be used for training (indexed) |
-| `created_at` | DATETIME | Record creation time |
-
-**Indexes:**
-- `ix_eval_user_sequence` on `(user_id, sequence_number)`
-- `ix_eval_train_eligible` on `(is_train_eligible, is_pre_fraud)`
-
-### Feature Snapshots Table (`feature_snapshots`)
-
-Feature store for ML training with point-in-time correct features computed using SQL window functions. **No future data leakage.**
-
-| Column | Type | Description |
-|--------|------|-------------|
-| `snapshot_id` | INTEGER | Primary key (auto-increment) |
-| `record_id` | VARCHAR(50) | FK to generated_records (unique, indexed) |
-| `user_id` | VARCHAR(50) | User identifier (indexed) |
-| `velocity_24h` | INTEGER | Transaction count in 24h window |
-| `amount_to_avg_ratio_30d` | FLOAT | Current amount / 30-day rolling average |
-| `balance_volatility_z_score` | FLOAT | (balance - avg) / stddev over 30 days |
-| `experimental_signals` | JSONB | Flexible JSON for experimental features |
-| `computed_at` | DATETIME | When features were computed |
-
-**Window Function Logic (Point-in-Time Correct):**
-```sql
--- velocity_24h
-COUNT(*) OVER (
-    PARTITION BY user_id
-    ORDER BY transaction_timestamp
-    RANGE BETWEEN INTERVAL '24 hours' PRECEDING AND CURRENT ROW
-)
-
--- balance_volatility_z_score
-(balance - AVG(balance) OVER window) / STDDEV(balance) OVER window
--- where window = RANGE BETWEEN INTERVAL '30 days' PRECEDING AND CURRENT ROW
-```
-
-**Experimental Signals (JSONB):**
-- `velocity_7d`: Transaction count in 7-day window
-- `max_amount_30d`: Maximum amount in 30-day window
-- `off_hours_count_7d`: Off-hours transactions in 7 days
-- `bank_connections_24h`: Bank connection count
-- `merchant_risk_score`: Merchant risk score
-
-### Pydantic Models
-
-#### AccountSnapshot
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `available_balance` | Decimal(18,2) | Current available balance |
-| `balance_to_transaction_ratio` | Float | Balance to transaction ratio |
-
-#### BehaviorMetrics
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `avg_available_balance_30d` | Decimal(18,2) | 30-day average balance |
-| `balance_volatility_z_score` | Float | High risk if Z < -2.5 |
-
-#### ConnectionMetrics
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `bank_connections_count_24h` | Integer | Anomaly threshold > 4 |
-| `bank_connections_count_7d` | Integer | Anomaly if > 300% of 30d avg |
-| `bank_connections_avg_30d` | Float | 30-day daily average |
-
-#### TransactionEvaluation
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `amount` | Decimal(18,2) | Transaction amount |
-| `amount_to_avg_ratio` | Float | Anomaly if > 5.0 |
-| `merchant_risk_score` | Integer | 0-100, anomaly if > 80 |
-| `is_returned` | Boolean | Target label |
-
-#### GeneratedRecord
-
-Composite model combining all above with PII and labels.
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `record_id` | String | Unique identifier |
-| `user_id` | String | User identifier |
-| `full_name` | String | Account holder name |
-| `email` | String | Email address |
-| `phone` | String | Phone number |
-| `transaction_timestamp` | DateTime | Transaction time |
-| `is_off_hours_txn` | Boolean | Off-hours flag (10pm-6am) |
-| `account` | AccountSnapshot | Account metrics |
-| `behavior` | BehaviorMetrics | Behavioral metrics |
-| `connection` | ConnectionMetrics | Connection metrics |
-| `transaction` | TransactionEvaluation | Transaction metrics |
-| `identity_changes` | IdentityChangeInfo | Identity change tracking |
-| `is_fraudulent` | Boolean | Fraud label |
-| `fraud_type` | String | Fraud scenario type |
-
-#### EvaluationMetadata
-
-Metadata for model evaluation (not used in training).
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `user_id` | String | User identifier |
-| `record_id` | String | Links to GeneratedRecord |
-| `sequence_number` | Integer | Transaction order (1-indexed) |
-| `fraud_confirmed_at` | DateTime | When fraud was confirmed |
-| `is_pre_fraud` | Boolean | Before fraud detection |
-| `days_to_fraud` | Float | Days until fraud event |
-| `is_train_eligible` | Boolean | Can be used for training |
-
-### Graph Models
-
-#### Node Types
-
-| Type | Properties |
-|------|------------|
-| `USER` | name, email, phone |
-| `DEVICE` | fingerprint, device_type, os, user_agent |
-| `ACCOUNT` | account_number, account_type, balance |
-| `IP_ADDRESS` | address, is_vpn, country |
-
-#### Edge Types
-
-| Type | Description |
-|------|-------------|
-| `USES_DEVICE` | User -> Device relationship |
-| `HAS_ACCOUNT` | User -> Account relationship |
-| `USES_IP` | User -> IP Address relationship |
-| `TRANSFERS_TO` | Account -> Account fund transfer |
-
-### Fraud Patterns
-
-#### Transaction-Based Patterns
-
-| Pattern | Key Indicators |
-|---------|----------------|
-| **Liquidity Crunch** | Low balance, z-score < -2.5, is_returned=True |
-| **Link Burst** | bank_connections_count_24h between 5-15 |
-| **Account Takeover (ATO)** | amount_to_avg_ratio > 5.0, off-hours, identity change < 72h |
-
-#### Stateful Fraud Profiles (src/generator/core.py)
-
-| Profile | Behavior | Metadata |
-|---------|----------|----------|
-| **Bust-Out** | 20-50 small legitimate transactions, then sudden spike (>500% of avg) | Fraud event has `is_train_eligible=True` |
-| **Sleeper (ATO)** | Dormant 30+ days, then Link Burst (3+ connections in 1 hour), then high-value debit | Burst events marked `is_pre_fraud=True` |
-
-**Label Delay Simulation**: `fraud_confirmed_at` uses Log-Normal distribution (mean=5 days). If `fraud_confirmed_at > simulation_date`, record appears "clean" (undetected fraud).
-
-#### Graph-Based Patterns
-
-| Pattern | Key Indicators |
-|---------|----------------|
-| **Device Sharing** | >5 users per device in 7 days |
-| **IP Recycling** | Multiple users sharing same IP/VPN |
-| **Kiting Cycle** | Circular fund transfers (A->B->C->A) |
-
-## File Structure
-
-```
-synthetic-data-gen/
-├── src/
-│   ├── main.py                          # CLI entry point
-│   ├── api/                             # FastAPI application
-│   │   ├── __init__.py
-│   │   ├── main.py                      # API routes and app
-│   │   ├── model_manager.py             # Dynamic model loading from MLflow/MinIO
-│   │   ├── schemas.py                   # Pydantic request/response models
-│   │   └── services.py                  # Signal evaluation logic
-│   ├── model/                           # ML model utilities
-│   │   ├── __init__.py
-│   │   ├── loader.py                    # DataLoader for train/test splits
-│   │   ├── train.py                     # MLflow-enabled training pipeline
-│   │   └── evaluate.py                  # Score calibration and evaluation
-│   ├── ui/                              # Streamlit dashboard
-│   │   ├── Dockerfile                   # Dashboard container
-│   │   ├── app.py                       # Dashboard application
-│   │   ├── data_service.py              # Database and API client layer
-│   │   └── mlflow_utils.py              # MLflow client helpers
-│   ├── generator/
-│   │   ├── __init__.py                  # Stateful generator exports
-│   │   └── core.py                      # UserSimulator, fraud profiles
-│   ├── pipeline/
-│   │   ├── __init__.py                  # Pipeline exports
-│   │   └── materialize_features.py      # Feature materialization script
-│   └── synthetic_pipeline/
-│       ├── __init__.py                  # Package init
-│       ├── generator.py                 # DataGenerator class
-│       ├── graph.py                     # GraphNetworkGenerator class
-│       ├── logging.py                   # Structured logging config
-│       ├── db/
-│       │   ├── __init__.py              # DB module exports
-│       │   ├── models.py                # SQLAlchemy models
-│       │   ├── session.py               # Database session management
-│       │   └── migrations/
-│       │       └── 001_create_feature_snapshots.sql
-│       └── models/
-│           ├── __init__.py              # Model exports
-│           ├── account.py               # AccountSnapshot model
-│           ├── behavior.py              # BehaviorMetrics model
-│           ├── connection.py            # ConnectionMetrics model
-│           ├── record.py                # GeneratedRecord model
-│           └── transaction.py           # TransactionEvaluation model
-├── tests/
-│   ├── __init__.py
-│   ├── test_api.py                      # API endpoint tests
-│   ├── test_evaluate.py                 # Model evaluation tests
-│   ├── test_loader.py                   # DataLoader tests
-│   ├── test_ui_data_service.py          # Dashboard data service tests
-│   ├── test_core_generator.py           # Stateful generator tests
-│   ├── test_feature_store.py            # Feature store tests
-│   ├── test_generator.py                # DataGenerator tests
-│   ├── test_graph.py                    # GraphNetworkGenerator tests
-│   └── test_pipeline.py                 # Basic tests
-├── config/                              # Configuration files
-├── scripts/
-│   ├── wait-for-it.sh                   # DB readiness script
-│   └── init-mlflow-db.sql               # Creates mlflow_db on startup
-├── .github/
-│   └── workflows/
-│       └── ci.yml                       # GitHub Actions CI
-├── .env                                 # Environment variables (gitignored)
-├── .env.example                         # Environment template
-├── .gitignore
-├── .pre-commit-config.yaml              # Pre-commit hooks
-├── docker-compose.yml                   # Docker services (db, api, dashboard)
-├── Dockerfile                           # Generator/API container
-├── Makefile                             # Build commands
-├── pyproject.toml                       # Project config and dependencies
-└── README.md                            # This file
-```
-
-### Key Files
-
-| File | Purpose |
-|------|---------|
-| `src/main.py` | CLI with `seed`, `init-db`, `stats` commands |
-| `src/api/main.py` | FastAPI application with `/evaluate/signal` endpoint |
-| `src/api/services.py` | Signal evaluation logic and feature processing |
-| `src/model/loader.py` | DataLoader with temporal splitting and label maturity |
-| `src/model/train.py` | MLflow-enabled XGBoost training pipeline |
-| `src/model/evaluate.py` | Score calibration and impact analysis |
-| `src/api/model_manager.py` | Dynamic model loading from MLflow/MinIO with fallback |
-| `src/ui/app.py` | Streamlit dashboard for risk inspection |
-| `src/ui/data_service.py` | Database queries and API client for dashboard |
-| `src/ui/mlflow_utils.py` | MLflow client helpers for Model Lab |
-| `src/generator/core.py` | Stateful UserSimulator, BustOutProfile, SleeperProfile |
-| `src/pipeline/materialize_features.py` | Feature materialization with SQL window functions |
-| `src/synthetic_pipeline/generator.py` | Transaction data generation with fraud patterns |
-| `src/synthetic_pipeline/graph.py` | Graph relationship generation |
-| `src/synthetic_pipeline/db/models.py` | SQLAlchemy ORM models (GeneratedRecordDB, FeatureSnapshotDB) |
-| `src/synthetic_pipeline/db/session.py` | Database connection pooling and batch inserts |
-| `src/synthetic_pipeline/db/migrations/*.sql` | SQL migration scripts |
-| `src/synthetic_pipeline/models/*.py` | Pydantic validation models |
-| `docker-compose.yml` | Docker services (db, api, dashboard, mlflow, minio) |
-| `pyproject.toml` | Dependencies and project metadata |
 
 ## Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `POSTGRES_USER` | synthetic | Database user |
-| `POSTGRES_PASSWORD` | synthetic_dev_password | Database password |
-| `POSTGRES_DB` | synthetic_data | Database name |
-| `POSTGRES_HOST` | localhost | Database host |
-| `POSTGRES_PORT` | 5432 | Database port |
-| `DATABASE_URL` | (built from above) | Full connection URL |
-| `DB_PORT` | 5432 | Host port for PostgreSQL |
-| `API_PORT` | 8000 | Host port for API server |
-| `DASHBOARD_PORT` | 8501 | Host port for Streamlit dashboard |
-| `MLFLOW_PORT` | 5005 | Host port for MLflow server |
-| `MINIO_API_PORT` | 9000 | Host port for MinIO API |
-| `MINIO_CONSOLE_PORT` | 9001 | Host port for MinIO console |
-| `API_BASE_URL` | http://localhost:8000 | API base URL (for dashboard) |
-| `MLFLOW_TRACKING_URI` | http://localhost:5005 | MLflow tracking server URL |
-| `MLFLOW_S3_ENDPOINT_URL` | http://minio:9000 | MinIO S3 endpoint (Docker) |
-| `AWS_ACCESS_KEY_ID` | minioadmin | MinIO access key |
-| `AWS_SECRET_ACCESS_KEY` | minioadmin | MinIO secret key |
+Copy `.env.example` to `.env` and adjust as needed:
+
+```bash
+# Database
+POSTGRES_USER=synthetic
+POSTGRES_PASSWORD=synthetic_dev_password
+POSTGRES_DB=synthetic_data
+DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@localhost:5432/${POSTGRES_DB}
+
+# Service ports (change to avoid conflicts)
+DB_PORT=5432
+API_PORT=8000
+DASHBOARD_PORT=8501
+MLFLOW_PORT=5005
+```
+
+## Architecture
+
+- **Synthetic Pipeline**: Generates realistic transaction profiles with configurable fraud patterns (bust-out, sleeper ATO, link burst)
+- **Label Delay Simulation**: Log-normal distribution for `fraud_confirmed_at` timestamps, enabling point-in-time correct training
+- **Feature Store**: SQL window functions compute features without future data leakage
+- **Model Training**: XGBoost with MLflow tracking, metrics logging, and model registry
+- **Serving**: Dynamic model loading from MLflow with automatic reloading on promotion

@@ -126,7 +126,7 @@ class DataLoader:
         """Load training set with label maturity enforcement.
 
         Train Set Rules:
-        - created_at < cutoff
+        - transaction_timestamp < cutoff
         - is_train_eligible = True
         - Label is fraud ONLY IF fraud_confirmed_at <= cutoff (knowledge horizon)
         """
@@ -141,7 +141,7 @@ class DataLoader:
                 em.is_train_eligible,
                 em.fraud_confirmed_at,
                 gr.is_fraudulent,
-                em.created_at,
+                gr.transaction_timestamp,
                 -- Knowledge Horizon: Only label fraud if confirmed before cutoff
                 CASE
                     WHEN gr.is_fraudulent = TRUE
@@ -153,9 +153,9 @@ class DataLoader:
             FROM feature_snapshots fs
             INNER JOIN evaluation_metadata em ON fs.record_id = em.record_id
             INNER JOIN generated_records gr ON fs.record_id = gr.record_id
-            WHERE em.created_at < :cutoff
+            WHERE gr.transaction_timestamp < :cutoff
               AND em.is_train_eligible = TRUE
-            ORDER BY em.created_at
+            ORDER BY gr.transaction_timestamp
         """)
 
         result = session.execute(query, {"cutoff": cutoff})
@@ -168,7 +168,7 @@ class DataLoader:
         """Load test set (all records after cutoff).
 
         Test Set Rules:
-        - created_at >= cutoff
+        - transaction_timestamp >= cutoff
         - Uses actual fraud label (no knowledge horizon restriction)
         """
         query = text("""
@@ -182,14 +182,14 @@ class DataLoader:
                 em.is_train_eligible,
                 em.fraud_confirmed_at,
                 gr.is_fraudulent,
-                em.created_at,
+                gr.transaction_timestamp,
                 -- Test set uses actual fraud label
                 CASE WHEN gr.is_fraudulent = TRUE THEN 1 ELSE 0 END AS label
             FROM feature_snapshots fs
             INNER JOIN evaluation_metadata em ON fs.record_id = em.record_id
             INNER JOIN generated_records gr ON fs.record_id = gr.record_id
-            WHERE em.created_at >= :cutoff
-            ORDER BY em.created_at
+            WHERE gr.transaction_timestamp >= :cutoff
+            ORDER BY gr.transaction_timestamp
         """)
 
         result = session.execute(query, {"cutoff": cutoff})
